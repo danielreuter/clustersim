@@ -98,7 +98,7 @@ export function SensitivityChart({ data, currentValue, color, isActive }: Sensit
           y1={threshold100Y}
           x2="190"
           y2={threshold100Y}
-          stroke="hsl(var(--destructive))"
+          stroke="var(--destructive)"
           strokeWidth="1"
           strokeDasharray="4 2"
         />

@@ -1,0 +1,93 @@
+{
+  "comm": {
+    "reduce_scatter_ring_8": [
+      8.4e-06,
+      1.9444444444444444e-06
+    ],
+    "reduce_scatter_tree_8": [
+      3.6e-06,
+      1.9444444444444444e-06
+    ],
+    "allgather_ring_8": [
+      8.4e-06,
+      1.9444444444444444e-06
+    ],
+    "allreduce_ring_8": [
+      1.68e-05,
+      3.888888888888889e-06
+    ],
+    "allreduce_tree_8": [
+      7.2e-06,
+      3.888888888888889e-06
+    ],
+    "allreduce_1gpu": [
+      0.0,
+      0.0
+    ],
+    "p2p_1mb_nvlink": [
+      2e-06,
+      2.222222222222222e-06
+    ],
+    "p2p_1mb_ib": [
+      9.999999999999999e-06,
+      2e-05
+    ],
+    "pipeline_util_4_4": 0.5714285714285714,
+    "pipeline_util_8_16": 0.6956521739130435,
+    "pipeline_util_1_1": 1.0
+  },
+  "hierarchical": {
+    "intra_node_4gpus": [
+      1.3999999999999998e-05,
+      3.3333333333333333e-06
+    ],
+    "intra_node_8gpus": [
+      2.3599999999999998e-05,
+      3.888888888888889e-06
+    ],
+    "cross_node_16gpus": [
+      4.36e-05,
+      6.388888888888889e-06
+    ],
+    "cross_node_64gpus": [
+      8.36e-05,
+      8.263888888888888e-06
+    ]
+  },
+  "model_props": {
+    "weight_size_gb": 140.0,
+    "weight_per_layer_gb": 1.75,
+    "largest_matrix_mb": 469.762048,
+    "flops_per_token": 140000000000.0,
+    "kv_cache_per_token_kb": 327.68
+  },
+  "inference": {
+    "mamba_full_hbm": {
+      "throughput": 24987173.019130163,
+      "pp": 4,
+      "tp": 1
+    },
+    "transformer_2k_full_hbm": {
+      "throughput": 22316878.98183887,
+      "pp": 4,
+      "tp": 4
+    },
+    "mamba_5pct_hbm": {
+      "throughput": 12236125.796418088,
+      "pp": 29,
+      "tp": 8
+    }
+  },
+  "training": {
+    "transformer_8k_full_hbm": {
+      "throughput": 6013845.130304433,
+      "pp": 10,
+      "tp": 1
+    },
+    "mamba_8k_full_hbm": {
+      "throughput": 6244251.481683811,
+      "pp": 10,
+      "tp": 1
+    }
+  }
+}

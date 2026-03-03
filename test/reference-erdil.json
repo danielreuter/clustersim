@@ -1,0 +1,61 @@
+{
+  "model_properties": {
+    "llama_3_70b": {
+      "total_params": 70552387584.0,
+      "total_active_params": 70552387584.0,
+      "total_ff_params": 56371445760,
+      "total_attn_params": 12079595520.0,
+      "kv_cache_size_per_input_bytes": 327680.0,
+      "d_head": 128,
+      "num_kv_heads": 16.0,
+      "sparsity_factor": 1,
+      "embedding_params": 2101346304
+    },
+    "deepseek_v3": {
+      "total_params": 666070679552.0,
+      "total_active_params": 35515793408.0,
+      "kv_cache_size_per_input_bytes": 59392,
+      "sparsity_factor": 28
+    },
+    "gpt_4": {
+      "total_params": 1796850057216.0,
+      "total_active_params": 274821021696.0,
+      "sparsity_factor": 8
+    }
+  },
+  "model_compute": {
+    "llama_3_70b_arithmetic_cost": 4599238885376.0,
+    "llama_3_70b_ffd_flop": 3607772528640.0,
+    "llama_3_70b_attn_kv_flop": 83886080000.0,
+    "llama_3_70b_memory_rw": 151323375841.68414,
+    "deepseek_v3_arithmetic_cost": 2759550042112.0,
+    "deepseek_v3_memory_rw": 468085192337.6458
+  },
+  "nccl_latency": {
+    "allreduce_8_1_LL": 1.52e-05,
+    "allreduce_8_1_LL128": 3.15e-05,
+    "allreduce_64_8_LL": 4.520000000000001e-05,
+    "reducescatter_8_1_LL": 1.1e-05
+  },
+  "mean_collective_time": {
+    "allreduce_8gpus_1mb": 2.2977777777777778e-05,
+    "allreduce_64gpus_1mb": 5.395000000000001e-05,
+    "allreduce_8gpus_10mb": 7.243567251461987e-05,
+    "p2p_2gpus_1mb": 9.622222222222222e-06
+  },
+  "token_latency": {
+    "llama70b_1gpu_bs1": "inf",
+    "llama70b_8gpu_bs32": 0.012007042028367885,
+    "llama70b_8gpu_bs1": 0.010755659038740033,
+    "llama405b_64gpu_bs32": 0.021651104084201997,
+    "deepseek_128gpu_bs400": 0.016523136997685685
+  },
+  "spec_dec": {
+    "llama70b_spec_8b": 0.008301279731009173
+  },
+  "matmul_rw": {
+    "basic": 4358144.0,
+    "with_tp": 4565031.600094732,
+    "fp8": 4358144.0
+  }
+}

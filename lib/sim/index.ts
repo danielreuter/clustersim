@@ -17,8 +17,6 @@ export { isV2Workload } from "./types"
 
 export {
   simulate,
-  simulateV2,
-  simulateComparison,
   composeGamma,
   dedicatedThroughput,
   verifiedComputeThroughput,

@@ -14,17 +14,11 @@ import {
 } from "@/components/ui/select"
 import {
   simulate,
-  simulateV2,
-  simulateComparison,
-  sweep,
   logRange,
-  linRange,
   HARDWARE,
-  WORKLOADS,
   WORKLOADS_V2,
   MODEL_MAP,
   GPU_MAP,
-  VERIFIER_FULL,
   honestLoadFromFractions,
   type Scenario,
   type GammaResult,
@@ -282,12 +276,8 @@ function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; 
 // Context length sweep for v2
 // ---------------------------------------------------------------------------
 
-function useContextSweep(
-  scenario: Scenario,
-  backend: "v1" | "v2",
-) {
+function useContextSweep(scenario: Scenario) {
   return useMemo(() => {
-    if (backend === "v1") return []
     const wl = scenario.covert
     if (!("backend" in wl) || wl.kind !== "inference") return []
 
@@ -297,9 +287,9 @@ function useContextSweep(
         ...scenario,
         covert: { ...wl, contextLength: ctx } as CovertWorkloadInference,
       }
-      return { value: ctx, result: simulateV2(modified) }
+      return { value: ctx, result: simulate(modified) }
     })
-  }, [scenario, backend])
+  }, [scenario])
 }
 
 // ---------------------------------------------------------------------------
@@ -307,9 +297,7 @@ function useContextSweep(
 // ---------------------------------------------------------------------------
 
 export function GammaDashboard() {
-  const [backend, setBackend] = useState<"v1" | "v2">("v1")
   const [hwKey, setHwKey] = useState("gb200-nvl72")
-  const [wlKey, setWlKey] = useState("inf-1t")
   const [computeFrac, setComputeFrac] = useState(50)
   const [memoryFrac, setMemoryFrac] = useState(50)
   const [alpha, setAlpha] = useState(100)
@@ -345,16 +333,6 @@ export function GammaDashboard() {
       sanitizationEnabled: sanitization,
     }
 
-    if (backend === "v1") {
-      return {
-        hardware: hw,
-        honest: honestLoadFromFractions(hw, computeFrac / 100, memoryFrac / 100),
-        verifier,
-        covert: WORKLOADS[wlKey],
-      }
-    }
-
-    // v2 mode
     let covert: CovertWorkloadInference | CovertWorkloadTraining
     if (v2UsePreset) {
       covert = WORKLOADS_V2[v2WlKey]
@@ -395,17 +373,9 @@ export function GammaDashboard() {
       verifier,
       covert,
     }
-  }, [backend, hwKey, wlKey, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochSExp, downtimeS, survivingGB, v2WlKey, v2ModelKey, v2GpuKey, v2NGpu, v2ContextLength, v2WorkloadKind, v2SyncMode, v2UsePreset])
+  }, [hwKey, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochSExp, downtimeS, survivingGB, v2WlKey, v2ModelKey, v2GpuKey, v2NGpu, v2ContextLength, v2WorkloadKind, v2SyncMode, v2UsePreset])
 
-  const result = useMemo(() => {
-    if (backend === "v1") return simulate(scenario)
-    return simulateV2(scenario)
-  }, [scenario, backend])
-
-  const comparison = useMemo(() => {
-    if (backend !== "v2") return null
-    return simulateComparison(scenario)
-  }, [scenario, backend])
+  const result = useMemo(() => simulate(scenario), [scenario])
 
   const snapshot: SimulationSnapshot = useMemo(() => ({ input: scenario, output: result }), [scenario, result])
   const [copied, setCopied] = useState(false)
@@ -417,34 +387,28 @@ export function GammaDashboard() {
 
   // Sweep: b_out
   const bOutSweep = useMemo(
-    () => {
-      const simFn = backend === "v1" ? simulate : simulateV2
-      return logRange(1, 10, 60).map((v) => ({
-        value: v,
-        result: simFn({ ...scenario, verifier: { ...scenario.verifier, covertEgressBps: v } }),
-      }))
-    },
-    [scenario, backend],
+    () => logRange(1, 10, 60).map((v) => ({
+      value: v,
+      result: simulate({ ...scenario, verifier: { ...scenario.verifier, covertEgressBps: v } }),
+    })),
+    [scenario],
   )
 
   // Sweep: proven compute share (log-spaced from 1% to 99%)
   const computeSweep = useMemo(
-    () => {
-      const simFn = backend === "v1" ? simulate : simulateV2
-      return logRange(-2, Math.log10(0.99), 50).map((v) => ({
-        value: v,
-        result: simFn({
-          ...scenario,
-          honest: { ...scenario.honest, claimedComputeFlops: v * scenario.hardware.computeFlops },
-          verifier: { ...scenario.verifier, alpha: 1 },
-        }),
-      }))
-    },
-    [scenario, backend],
+    () => logRange(-2, Math.log10(0.99), 50).map((v) => ({
+      value: v,
+      result: simulate({
+        ...scenario,
+        honest: { ...scenario.honest, claimedComputeFlops: v * scenario.hardware.computeFlops },
+        verifier: { ...scenario.verifier, alpha: 1 },
+      }),
+    })),
+    [scenario],
   )
 
   // Context sweep (v2 inference only)
-  const ctxSweep = useContextSweep(scenario, backend)
+  const ctxSweep = useContextSweep(scenario)
 
   const opMax = Math.max(result.gammaCompute, result.gammaIngress, result.gammaEgress, 10)
   const opBottleneck: "compute" | "ingress" | "egress" = result.gammaCompute >= result.gammaIngress && result.gammaCompute >= result.gammaEgress
@@ -466,30 +430,6 @@ export function GammaDashboard() {
           </p>
         </div>
 
-        {/* Backend toggle */}
-        <div className="mb-4 flex gap-2">
-          <button
-            onClick={() => setBackend("v1")}
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              backend === "v1"
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted text-muted-foreground hover:bg-muted/80"
-            }`}
-          >
-            Abstract (v1)
-          </button>
-          <button
-            onClick={() => setBackend("v2")}
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              backend === "v2"
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted text-muted-foreground hover:bg-muted/80"
-            }`}
-          >
-            Model-based (v2)
-          </button>
-        </div>
-
         {/* === Result Card === */}
         <Card className="mb-6">
           <CardContent className="pt-6">
@@ -502,11 +442,6 @@ export function GammaDashboard() {
               {result.v2 && (
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${REGIME_COLORS[result.v2.regime] ?? "bg-gray-100 text-gray-800"}`}>
                   {REGIME_LABELS[result.v2.regime] ?? result.v2.regime}
-                </span>
-              )}
-              {comparison && (
-                <span className="text-xs text-muted-foreground">
-                  v1: {fmtGamma(comparison.v1.gamma)}
                 </span>
               )}
               <div className="ml-auto" />
@@ -621,30 +556,16 @@ export function GammaDashboard() {
                 </Select>
               </div>
 
-              {backend === "v1" ? (
-                <div>
-                  <Label className="text-xs text-muted-foreground">Covert Workload</Label>
-                  <Select value={wlKey} onValueChange={setWlKey}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(WORKLOADS).map(([k, v]) => (
-                        <SelectItem key={k} value={k}>{v.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : (
-                <>
-                  {/* V2 preset vs custom toggle */}
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => setV2UsePreset(!v2UsePreset)}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${v2UsePreset ? "bg-primary" : "bg-muted"}`}
-                    >
-                      <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${v2UsePreset ? "translate-x-4" : "translate-x-0"}`} />
-                    </button>
-                    <Label className="text-xs text-muted-foreground">Use preset</Label>
-                  </div>
+              {/* Preset vs custom toggle */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setV2UsePreset(!v2UsePreset)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${v2UsePreset ? "bg-primary" : "bg-muted"}`}
+                >
+                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${v2UsePreset ? "translate-x-4" : "translate-x-0"}`} />
+                </button>
+                <Label className="text-xs text-muted-foreground">Use preset</Label>
+              </div>
 
                   {v2UsePreset ? (
                     <div>
@@ -747,8 +668,6 @@ export function GammaDashboard() {
                       )}
                     </>
                   )}
-                </>
-              )}
 
               <div>
                 <div className="flex justify-between">

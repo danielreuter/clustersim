@@ -170,11 +170,8 @@ export function composeGamma(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Convenience: run the full pipeline with closed-form backend
-// ---------------------------------------------------------------------------
-
-export function simulate(scenario: Scenario): GammaResult {
+/** Closed-form pipeline (used internally by v2 paths and for v1-shaped workloads) */
+function simulateV1(scenario: Scenario): GammaResult {
   return composeGamma(
     scenario,
     dedicatedThroughput(scenario),
@@ -331,60 +328,18 @@ function simulateV2Training(scenario: Scenario, wl: CovertWorkloadTraining): Gam
 }
 
 /**
- * V2 simulation: dispatches on workload type.
- * - v1 (no backend field): falls through to existing simulate()
- * - v2 inference: roofline-lite batch search
- * - v2 training: roofline-lite + sync-aware d_in/d_out
+ * Main simulation entry point. Dispatches on workload type:
+ * - v1-shaped workloads (no backend field): closed-form pipeline
+ * - inference: roofline-lite batch search
+ * - training: roofline-lite + sync-aware d_in/d_out
  */
-export function simulateV2(scenario: Scenario): GammaResult {
+export function simulate(scenario: Scenario): GammaResult {
   const wl = scenario.covert
   if (!isV2Workload(wl)) {
-    return simulate(scenario)
+    return simulateV1(scenario)
   }
   if (wl.kind === "inference") {
     return simulateV2Inference(scenario, wl as CovertWorkloadInference)
   }
   return simulateV2Training(scenario, wl as CovertWorkloadTraining)
-}
-
-/**
- * Run both v1 and v2 paths for comparison.
- * For v2 workloads, constructs an equivalent v1 workload from resolved parameters.
- */
-export function simulateComparison(scenario: Scenario): { v1: GammaResult; v2: GammaResult } {
-  const v2Result = simulateV2(scenario)
-
-  // For v1 comparison, if it's a v2 workload, use the resolved parameters
-  const wl = scenario.covert
-  if (!isV2Workload(wl)) {
-    return { v1: v2Result, v2: v2Result }
-  }
-
-  // Construct v1 equivalent from v2 resolved values
-  const model = resolveModel(wl.modelKey)
-  const nPersist = model.totalParams * model.weightPrecisionBytes
-  const g = 2 * model.totalActiveParams // simple 2N FLOP/token approximation
-  let dIn = 0
-  let dOut = 4 // default egress for inference
-
-  if (wl.kind === "training") {
-    const twl = wl as CovertWorkloadTraining
-    const sync = deriveSyncIO(twl.syncPolicy)
-    dIn = sync.dIn
-    dOut = sync.dOut
-  }
-
-  const v1Covert: CovertWorkloadV1 = {
-    label: wl.label,
-    kind: wl.kind,
-    unit: wl.unit,
-    stateBytes: nPersist,
-    flopPerUnit: g,
-    ingressBytesPerUnit: dIn,
-    egressBytesPerUnit: dOut,
-  }
-
-  const v1Scenario: Scenario = { ...scenario, covert: v1Covert }
-  const v1Result = simulate(v1Scenario)
-  return { v1: { ...v1Result }, v2: { ...v2Result, gammaV1: v1Result.gamma } }
 }

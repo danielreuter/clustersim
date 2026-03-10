@@ -1,12 +1,17 @@
 // Verify Γ engine against WTS doc worked examples
 import {
   simulate,
+  simulateV2,
+  simulateComparison,
   HARDWARE,
   WORKLOADS,
+  WORKLOADS_V2,
   VERIFIER_FULL,
   VERIFIER_NO_SANITIZATION,
   honestLoadFromFractions,
   type Scenario,
+  type CovertWorkloadInference,
+  type CovertWorkloadTraining,
 } from "../lib/sim"
 
 let passed = 0
@@ -133,6 +138,109 @@ console.log("\n=== GB200 NVL72 + Inference 200B ===")
   // Γ_egress = 180e15*4 / (4e11*20e3) = 90
   assert("200B on GB200: Γ_egress", r.gammaEgress, 90, 0.1)
   assert("200B on GB200: dominant is egress", r.dominant === "egress" ? 1 : 0, 1)
+}
+
+// ===================================================================
+// V2: backward compat — all v1 tests should pass through simulateV2
+// ===================================================================
+console.log("\n=== simulateV2 backward compat (v1 workloads) ===")
+{
+  const s = scenario("gb200-nvl72", "inf-1t", false)
+  const r = simulateV2(s)
+  const rOrig = simulate(s)
+  assert("v2 compat: gamma matches v1", r.gamma, rOrig.gamma, 0.001)
+  assert("v2 compat: dominant matches", r.dominant === rOrig.dominant ? 1 : 0, 1)
+}
+
+// ===================================================================
+// V2: inference workload
+// ===================================================================
+console.log("\n=== simulateV2 inference: Llama 70B on 8×H100 ===")
+{
+  const hw = HARDWARE["4x-dgx-h100"]
+  const wl: CovertWorkloadInference = {
+    label: "Llama 70B on 8×H100",
+    kind: "inference",
+    unit: "token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 70B",
+    gpuKey: "H100",
+    nGpu: 8,
+    contextLength: 2048,
+  }
+  const s: Scenario = {
+    hardware: hw,
+    honest: honestLoadFromFractions(hw, 0.5, 0.5),
+    verifier: VERIFIER_FULL,
+    covert: wl,
+  }
+  const r = simulateV2(s)
+  console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
+  console.log(`  v2 regime: ${r.v2?.regime}, optBatch: ${r.v2?.optimalBatchSize}`)
+  assert("v2 inf: finite", r.finite ? 1 : 0, r.gamma === Infinity ? 0 : 1)
+  assert("v2 inf: has v2 metadata", r.v2 ? 1 : 0, 1)
+}
+
+// ===================================================================
+// V2: training workload with sync (use 8B to fit in 8×H100)
+// ===================================================================
+console.log("\n=== simulateV2 training: Llama 8B periodic sync ===")
+{
+  const hw = HARDWARE["4x-dgx-h100"]
+  const wl: CovertWorkloadTraining = {
+    label: "Train 8B periodic",
+    kind: "training",
+    unit: "train-token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 8B",
+    gpuKey: "H100",
+    nGpu: 8,
+    syncPolicy: {
+      mode: "periodic-updates",
+      bytesInPerSync: 16e9,
+      bytesOutPerSync: 16e9,
+      tokensPerSync: 1e6,
+    },
+  }
+  const s: Scenario = {
+    hardware: hw,
+    honest: honestLoadFromFractions(hw, 0.5, 0.1),
+    verifier: { ...VERIFIER_NO_SANITIZATION, covertEgressBps: 1e6 },
+    covert: wl,
+  }
+  const r = simulateV2(s)
+  console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
+  // With periodic sync, egress should become a factor
+  assert("v2 train: egress factor > 1", r.gammaEgress > 1 ? 1 : 0, 1)
+}
+
+// ===================================================================
+// V2: comparison mode
+// ===================================================================
+console.log("\n=== simulateComparison ===")
+{
+  const hw = HARDWARE["4x-dgx-h100"]
+  const wl: CovertWorkloadInference = {
+    label: "Llama 70B",
+    kind: "inference",
+    unit: "token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 70B",
+    gpuKey: "H100",
+    nGpu: 8,
+    contextLength: 2048,
+  }
+  const s: Scenario = {
+    hardware: hw,
+    honest: honestLoadFromFractions(hw, 0.5, 0.5),
+    verifier: VERIFIER_NO_SANITIZATION,
+    covert: wl,
+  }
+  const cmp = simulateComparison(s)
+  console.log(`  v1 Γ = ${cmp.v1.gamma.toFixed(1)}, v2 Γ = ${cmp.v2.gamma.toFixed(1)}`)
+  assert("comparison: both finite or both inf",
+    Number.isFinite(cmp.v1.gamma) === Number.isFinite(cmp.v2.gamma) ? 1 : 0, 1)
+  assert("comparison: v2 has gammaV1", cmp.v2.gammaV1 != null ? 1 : 0, 1)
 }
 
 // ===================================================================

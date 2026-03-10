@@ -1,4 +1,6 @@
-import type { Hardware, CovertWorkload, Verifier } from "./types"
+import type { Hardware, CovertWorkload, CovertWorkloadV1, CovertWorkloadInference, CovertWorkloadTraining, Verifier } from "./types"
+import { MODEL_MAP } from "@/lib/erdil/models"
+import { GPU_MAP } from "@/lib/erdil/gpus"
 
 const TB = 1e12
 const GB = 1e9
@@ -36,7 +38,7 @@ export const HARDWARE: Record<string, Hardware> = {
 // Covert workload presets (from WTS doc Table 2)
 // ---------------------------------------------------------------------------
 
-export const WORKLOADS: Record<string, CovertWorkload> = {
+export const WORKLOADS: Record<string, CovertWorkloadV1> = {
   "inf-1t": {
     label: "Inference 1T dense (BF16)",
     kind: "inference",
@@ -99,3 +101,99 @@ export function honestLoadFromFractions(
     claimedMemoryBytes: memoryFrac * hw.hbmBytes,
   }
 }
+
+// ---------------------------------------------------------------------------
+// V2 workload presets (model-based, roofline-lite backend)
+// ---------------------------------------------------------------------------
+
+export const WORKLOADS_V2_INFERENCE: Record<string, CovertWorkloadInference> = {
+  "v2-inf-llama70b-h100x8": {
+    label: "Llama 3 70B on 8×H100",
+    kind: "inference",
+    unit: "token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 70B",
+    gpuKey: "H100",
+    nGpu: 8,
+    contextLength: 2048,
+  },
+  "v2-inf-llama405b-h200x8": {
+    label: "Llama 3 405B on 8×H200",
+    kind: "inference",
+    unit: "token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 405B",
+    gpuKey: "H200",
+    nGpu: 8,
+    contextLength: 2048,
+  },
+  "v2-inf-deepseekv3-h100x8": {
+    label: "DeepSeek V3 on 8×H100",
+    kind: "inference",
+    unit: "token",
+    backend: "roofline-lite",
+    modelKey: "DeepSeek V3",
+    gpuKey: "H100",
+    nGpu: 8,
+    contextLength: 4096,
+  },
+  "v2-inf-llama8b-h100x1": {
+    label: "Llama 3 8B on 1×H100",
+    kind: "inference",
+    unit: "token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 8B",
+    gpuKey: "H100",
+    nGpu: 1,
+    contextLength: 4096,
+  },
+}
+
+export const WORKLOADS_V2_TRAINING: Record<string, CovertWorkloadTraining> = {
+  "v2-train-llama70b-h100x8-nosync": {
+    label: "Train Llama 70B 8×H100 (no sync)",
+    kind: "training",
+    unit: "train-token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 70B",
+    gpuKey: "H100",
+    nGpu: 8,
+    syncPolicy: { mode: "none" },
+  },
+  "v2-train-llama70b-h100x8-ckpt": {
+    label: "Train Llama 70B 8×H100 (checkpoint)",
+    kind: "training",
+    unit: "train-token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 70B",
+    gpuKey: "H100",
+    nGpu: 8,
+    syncPolicy: {
+      mode: "checkpoint",
+      bytesOutPerSync: 140e9, // ~70B params × 2 bytes
+      tokensPerSync: 1e6,
+    },
+  },
+  "v2-train-llama70b-h100x8-periodic": {
+    label: "Train Llama 70B 8×H100 (periodic sync)",
+    kind: "training",
+    unit: "train-token",
+    backend: "roofline-lite",
+    modelKey: "Llama 3 70B",
+    gpuKey: "H100",
+    nGpu: 8,
+    syncPolicy: {
+      mode: "periodic-updates",
+      bytesInPerSync: 140e9,
+      bytesOutPerSync: 140e9,
+      tokensPerSync: 1e6,
+    },
+  },
+}
+
+export const WORKLOADS_V2: Record<string, CovertWorkloadInference | CovertWorkloadTraining> = {
+  ...WORKLOADS_V2_INFERENCE,
+  ...WORKLOADS_V2_TRAINING,
+}
+
+export { MODEL_MAP, GPU_MAP }

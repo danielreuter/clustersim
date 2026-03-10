@@ -21,7 +21,8 @@ export type Verifier = {
   sanitizationEnabled: boolean
 }
 
-export type CovertWorkload = {
+// v1 workload: abstract, user-specified parameters
+export type CovertWorkloadV1 = {
   label: string
   kind: "inference" | "training"
   unit: string                  // "token", "train-token", etc.
@@ -29,6 +30,42 @@ export type CovertWorkload = {
   flopPerUnit: number           // g   — FLOP per unit of covert output
   ingressBytesPerUnit: number   // d_in
   egressBytesPerUnit: number    // d_out
+}
+
+// v2 inference: model-based, batch-optimized via roofline
+export type CovertWorkloadInference = {
+  label: string
+  kind: "inference"
+  unit: "token"
+  backend: "roofline-lite"
+  modelKey: string
+  gpuKey: string
+  nGpu: number
+  contextLength: number
+}
+
+// v2 training: sync-aware
+export type TrainingSyncPolicy =
+  | { mode: "none" }
+  | { mode: "checkpoint"; bytesOutPerSync: number; tokensPerSync: number }
+  | { mode: "periodic-updates"; bytesInPerSync: number; bytesOutPerSync: number; tokensPerSync: number }
+
+export type CovertWorkloadTraining = {
+  label: string
+  kind: "training"
+  unit: "train-token"
+  backend: "roofline-lite"
+  modelKey: string
+  gpuKey: string
+  nGpu: number
+  syncPolicy: TrainingSyncPolicy
+}
+
+// Union — v1 objects lack `backend` field
+export type CovertWorkload = CovertWorkloadV1 | CovertWorkloadInference | CovertWorkloadTraining
+
+export function isV2Workload(w: CovertWorkload): w is CovertWorkloadInference | CovertWorkloadTraining {
+  return "backend" in w
 }
 
 export type Scenario = {
@@ -40,7 +77,7 @@ export type Scenario = {
 
 export type ThroughputEstimate = {
   unitsPerSecond: number
-  regime?: "compute" | "memory" | "latency" | "comm"
+  regime?: "compute" | "memory" | "latency" | "comm" | "memory-bandwidth" | "under-batched"
   details?: Record<string, number | string>
 }
 
@@ -58,4 +95,16 @@ export type GammaResult = {
   fitMarginBytes: number
   finite: boolean
   reason?: string
+  v2?: {
+    regime: string
+    optimalBatchSize: number
+    nPersistBytes: number
+    workspaceBytes: number
+  }
+  gammaV1?: number
+}
+
+export type SimulationSnapshot = {
+  input: Scenario
+  output: GammaResult
 }

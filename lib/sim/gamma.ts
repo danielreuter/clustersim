@@ -2,7 +2,18 @@ import type {
   Scenario,
   ThroughputEstimate,
   GammaResult,
+  CovertWorkloadV1,
+  CovertWorkloadInference,
+  CovertWorkloadTraining,
 } from "./types"
+import { isV2Workload } from "./types"
+import {
+  rooflineLite,
+  rooflineLiteTraining,
+  deriveSyncIO,
+  resolveModel,
+  resolveGpu,
+} from "./roofline"
 
 // ---------------------------------------------------------------------------
 // Closed-form throughput backends
@@ -10,20 +21,22 @@ import type {
 
 /** Dedicated throughput: θ₀ = Ĝ / g (no verification, compute-limited) */
 export function dedicatedThroughput(s: Scenario): ThroughputEstimate {
+  const covert = s.covert as CovertWorkloadV1
   return {
-    unitsPerSecond: s.hardware.computeFlops / s.covert.flopPerUnit,
+    unitsPerSecond: s.hardware.computeFlops / covert.flopPerUnit,
     regime: "compute",
   }
 }
 
 /** Verified compute throughput: (Ĝ - αf*) / g */
 export function verifiedComputeThroughput(s: Scenario): ThroughputEstimate {
+  const covert = s.covert as CovertWorkloadV1
   const avail = Math.max(
     0,
     s.hardware.computeFlops - s.verifier.alpha * s.honest.claimedComputeFlops,
   )
   return {
-    unitsPerSecond: avail / s.covert.flopPerUnit,
+    unitsPerSecond: avail / covert.flopPerUnit,
     regime: "compute",
   }
 }
@@ -37,7 +50,8 @@ export function composeGamma(
   dedicated: ThroughputEstimate,
   verifiedCompute: ThroughputEstimate,
 ): GammaResult {
-  const { hardware, honest, verifier, covert } = scenario
+  const { hardware, honest, verifier } = scenario
+  const covert = scenario.covert as CovertWorkloadV1
   const theta0 = dedicated.unitsPerSecond
 
   // --- Memory fit check ---
@@ -202,4 +216,172 @@ export function linRange(start: number, stop: number, steps: number): number[] {
     result.push(start + i * step)
   }
   return result
+}
+
+// ---------------------------------------------------------------------------
+// V2: batch-aware inference + sync-aware training
+// ---------------------------------------------------------------------------
+
+function simulateV2Inference(scenario: Scenario, wl: CovertWorkloadInference): GammaResult {
+  const model = resolveModel(wl.modelKey)
+  const gpu = resolveGpu(wl.gpuKey)
+  const { hardware, honest, verifier } = scenario
+
+  // Full-budget roofline (dedicated throughput)
+  const fullBudget = rooflineLite(
+    model, gpu, wl.nGpu, wl.contextLength,
+    hardware.computeFlops, hardware.hbmBytes,
+  )
+
+  // Verified-budget roofline (after α*f* consumed)
+  const availFlops = Math.max(0, hardware.computeFlops - verifier.alpha * honest.claimedComputeFlops)
+  const availHbm = Math.max(0, hardware.hbmBytes - honest.claimedMemoryBytes)
+  const verifiedBudget = rooflineLite(
+    model, gpu, wl.nGpu, wl.contextLength,
+    availFlops, availHbm,
+  )
+
+  // Build a v1-equivalent scenario for composeGamma
+  const stateBytes = fullBudget.nPersist + fullBudget.workspace
+  const g = fullBudget.throughput.unitsPerSecond > 0
+    ? hardware.computeFlops / fullBudget.throughput.unitsPerSecond
+    : Infinity
+  const v1Covert: CovertWorkloadV1 = {
+    label: wl.label,
+    kind: "inference",
+    unit: "token",
+    stateBytes,
+    flopPerUnit: g,
+    ingressBytesPerUnit: 4, // token embedding
+    egressBytesPerUnit: 4,
+  }
+
+  const v1Scenario: Scenario = { ...scenario, covert: v1Covert }
+  const dedicated: ThroughputEstimate = fullBudget.throughput
+  const verified: ThroughputEstimate = verifiedBudget.throughput
+
+  const result = composeGamma(v1Scenario, dedicated, verified)
+
+  return {
+    ...result,
+    v2: {
+      regime: verifiedBudget.throughput.regime ?? "compute",
+      optimalBatchSize: verifiedBudget.optBatch,
+      nPersistBytes: fullBudget.nPersist,
+      workspaceBytes: fullBudget.workspace,
+    },
+  }
+}
+
+function simulateV2Training(scenario: Scenario, wl: CovertWorkloadTraining): GammaResult {
+  const model = resolveModel(wl.modelKey)
+  const gpu = resolveGpu(wl.gpuKey)
+  const { hardware, honest, verifier } = scenario
+
+  // Full-budget roofline
+  const fullBudget = rooflineLiteTraining(
+    model, gpu, wl.nGpu,
+    hardware.computeFlops, hardware.hbmBytes,
+  )
+
+  // Verified-budget roofline
+  const availFlops = Math.max(0, hardware.computeFlops - verifier.alpha * honest.claimedComputeFlops)
+  const availHbm = Math.max(0, hardware.hbmBytes - honest.claimedMemoryBytes)
+  const verifiedBudget = rooflineLiteTraining(
+    model, gpu, wl.nGpu,
+    availFlops, availHbm,
+  )
+
+  // Derive sync I/O
+  const { dIn, dOut } = deriveSyncIO(wl.syncPolicy)
+
+  const stateBytes = fullBudget.nPersist + fullBudget.workspace
+  const g = fullBudget.throughput.unitsPerSecond > 0
+    ? hardware.computeFlops / fullBudget.throughput.unitsPerSecond
+    : Infinity
+
+  const v1Covert: CovertWorkloadV1 = {
+    label: wl.label,
+    kind: "training",
+    unit: "train-token",
+    stateBytes,
+    flopPerUnit: g,
+    ingressBytesPerUnit: dIn,
+    egressBytesPerUnit: dOut,
+  }
+
+  const v1Scenario: Scenario = { ...scenario, covert: v1Covert }
+  const dedicated: ThroughputEstimate = fullBudget.throughput
+  const verified: ThroughputEstimate = verifiedBudget.throughput
+
+  const result = composeGamma(v1Scenario, dedicated, verified)
+
+  return {
+    ...result,
+    v2: {
+      regime: verifiedBudget.throughput.regime ?? "compute",
+      optimalBatchSize: verifiedBudget.optBatch,
+      nPersistBytes: fullBudget.nPersist,
+      workspaceBytes: fullBudget.workspace,
+    },
+  }
+}
+
+/**
+ * V2 simulation: dispatches on workload type.
+ * - v1 (no backend field): falls through to existing simulate()
+ * - v2 inference: roofline-lite batch search
+ * - v2 training: roofline-lite + sync-aware d_in/d_out
+ */
+export function simulateV2(scenario: Scenario): GammaResult {
+  const wl = scenario.covert
+  if (!isV2Workload(wl)) {
+    return simulate(scenario)
+  }
+  if (wl.kind === "inference") {
+    return simulateV2Inference(scenario, wl as CovertWorkloadInference)
+  }
+  return simulateV2Training(scenario, wl as CovertWorkloadTraining)
+}
+
+/**
+ * Run both v1 and v2 paths for comparison.
+ * For v2 workloads, constructs an equivalent v1 workload from resolved parameters.
+ */
+export function simulateComparison(scenario: Scenario): { v1: GammaResult; v2: GammaResult } {
+  const v2Result = simulateV2(scenario)
+
+  // For v1 comparison, if it's a v2 workload, use the resolved parameters
+  const wl = scenario.covert
+  if (!isV2Workload(wl)) {
+    return { v1: v2Result, v2: v2Result }
+  }
+
+  // Construct v1 equivalent from v2 resolved values
+  const model = resolveModel(wl.modelKey)
+  const nPersist = model.totalParams * model.weightPrecisionBytes
+  const g = 2 * model.totalActiveParams // simple 2N FLOP/token approximation
+  let dIn = 0
+  let dOut = 4 // default egress for inference
+
+  if (wl.kind === "training") {
+    const twl = wl as CovertWorkloadTraining
+    const sync = deriveSyncIO(twl.syncPolicy)
+    dIn = sync.dIn
+    dOut = sync.dOut
+  }
+
+  const v1Covert: CovertWorkloadV1 = {
+    label: wl.label,
+    kind: wl.kind,
+    unit: wl.unit,
+    stateBytes: nPersist,
+    flopPerUnit: g,
+    ingressBytesPerUnit: dIn,
+    egressBytesPerUnit: dOut,
+  }
+
+  const v1Scenario: Scenario = { ...scenario, covert: v1Covert }
+  const v1Result = simulate(v1Scenario)
+  return { v1: { ...v1Result }, v2: { ...v2Result, gammaV1: v1Result.gamma } }
 }

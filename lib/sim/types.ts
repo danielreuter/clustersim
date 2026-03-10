@@ -26,7 +26,8 @@ export type CovertWorkloadV1 = {
   label: string
   kind: "inference" | "training"
   unit: string                  // "token", "train-token", etc.
-  stateBytes: number            // n   — covert state that must reside in HBM
+  stateBytes: number            // n   — total covert HBM footprint (persist + workspace)
+  persistBytes?: number         // n_persist — covert state reloaded after sanitization (defaults to stateBytes)
   flopPerUnit: number           // g   — FLOP per unit of covert output
   ingressBytesPerUnit: number   // d_in
   egressBytesPerUnit: number    // d_out

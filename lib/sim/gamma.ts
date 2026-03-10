@@ -82,8 +82,9 @@ export function composeGamma(
   let tCovert = verifier.epochSeconds
 
   if (verifier.sanitizationEnabled) {
+    const reloadable = covert.persistBytes ?? covert.stateBytes
     tReload =
-      Math.max(0, covert.stateBytes - verifier.survivingStateBytes) /
+      Math.max(0, reloadable - verifier.survivingStateBytes) /
       verifier.covertIngressBps
 
     tCovert = Math.max(
@@ -251,6 +252,7 @@ function simulateV2Inference(scenario: Scenario, wl: CovertWorkloadInference): G
     kind: "inference",
     unit: "token",
     stateBytes,
+    persistBytes: fullBudget.nPersist,
     flopPerUnit: g,
     ingressBytesPerUnit: 4, // token embedding
     egressBytesPerUnit: 4,
@@ -305,6 +307,7 @@ function simulateV2Training(scenario: Scenario, wl: CovertWorkloadTraining): Gam
     kind: "training",
     unit: "train-token",
     stateBytes,
+    persistBytes: fullBudget.nPersist,
     flopPerUnit: g,
     ingressBytesPerUnit: dIn,
     egressBytesPerUnit: dOut,

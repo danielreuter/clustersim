@@ -1,12 +1,16 @@
 // Verify Γ engine with GPU-based hardware
 import {
   simulate,
+  simulateDirect,
   resolveHardware,
   honestLoadFromFractions,
+  computeHardwarePreset,
+  computeCovertPreset,
   VERIFIER_FULL,
   VERIFIER_NO_SANITIZATION,
   type Hardware,
   type Scenario,
+  type DirectScenario,
   type CovertWorkloadInference,
   type CovertWorkloadTraining,
 } from "../lib/sim"
@@ -184,6 +188,97 @@ console.log("\n=== Llama 8B on 8×H100 ===")
   const r = simulate(s)
   console.log(`  Γ = ${r.gamma.toFixed(1)}, regime: ${r.v2?.regime}, optBatch: ${r.v2?.optimalBatchSize}`)
   assert("8B unverified: Γ = 1", r.gamma, 1, 0.01)
+}
+
+// ===================================================================
+// simulateDirect: raw params, no roofline
+// ===================================================================
+console.log("\n=== simulateDirect: basic ===")
+{
+  const hw = computeHardwarePreset("H100", 8)
+  const ds: DirectScenario = {
+    hardware: hw,
+    honest: { claimedComputeFlops: hw.computeFlops * 0.5, claimedMemoryBytes: hw.hbmBytes * 0.1 },
+    verifier: VERIFIER_NO_SANITIZATION,
+    covert: {
+      label: "test",
+      kind: "inference",
+      unit: "token",
+      stateBytes: 140e9,    // 140 GB (Llama 70B weights)
+      flopPerUnit: 1e11,    // ~100 GFLOP per token
+      ingressBytesPerUnit: 0,
+      egressBytesPerUnit: 4,
+    },
+  }
+  const r = simulateDirect(ds)
+  console.log(`  Γ = ${r.gamma.toFixed(2)}, dominant = ${r.dominant}`)
+  // With 50% honest compute, α=1 → gammaCompute ≈ 2
+  assert("direct: gammaCompute ≈ 2", r.gammaCompute, 2, 0.01)
+  assert("direct: finite", r.finite ? 1 : 0, 1)
+}
+
+// ===================================================================
+// simulateDirect: memory overflow
+// ===================================================================
+console.log("\n=== simulateDirect: memory overflow ===")
+{
+  const hw = computeHardwarePreset("H100", 8) // 640 GB
+  const ds: DirectScenario = {
+    hardware: hw,
+    honest: { claimedComputeFlops: 0, claimedMemoryBytes: hw.hbmBytes * 0.5 },
+    verifier: VERIFIER_NO_SANITIZATION,
+    covert: {
+      label: "huge",
+      kind: "inference",
+      unit: "unit",
+      stateBytes: 1e12, // 1 TB > 640 GB - 320 GB honest
+      flopPerUnit: 1e10,
+      ingressBytesPerUnit: 0,
+      egressBytesPerUnit: 0,
+    },
+  }
+  const r = simulateDirect(ds)
+  console.log(`  Γ = ${r.gamma}, dominant = ${r.dominant}`)
+  assert("direct overflow: infeasible", r.gamma, Infinity)
+  assert("direct overflow: memory-fit", r.dominant === "memory-fit" ? 1 : 0, 1)
+}
+
+// ===================================================================
+// simulateDirect: no verification → γ = 1
+// ===================================================================
+console.log("\n=== simulateDirect: unverified ===")
+{
+  const hw = { computeFlops: 1e15, hbmBytes: 1e12 }
+  const ds: DirectScenario = {
+    hardware: hw,
+    honest: { claimedComputeFlops: 0, claimedMemoryBytes: 0 },
+    verifier: { ...VERIFIER_NO_SANITIZATION, alpha: 0, covertIngressBps: Infinity, covertEgressBps: Infinity },
+    covert: {
+      label: "test",
+      kind: "inference",
+      unit: "unit",
+      stateBytes: 100e9,
+      flopPerUnit: 1e10,
+      ingressBytesPerUnit: 0,
+      egressBytesPerUnit: 0,
+    },
+  }
+  const r = simulateDirect(ds)
+  console.log(`  Γ = ${r.gamma.toFixed(2)}`)
+  assert("direct unverified: γ = 1", r.gamma, 1, 0.01)
+}
+
+// ===================================================================
+// computeCovertPreset: produces reasonable values
+// ===================================================================
+console.log("\n=== computeCovertPreset ===")
+{
+  const hw = computeHardwarePreset("H100", 8)
+  const wl = computeCovertPreset(hw, { modelKey: "Llama 3 70B", kind: "inference", contextLength: 2048 })
+  console.log(`  stateBytes = ${(wl.stateBytes / 1e9).toFixed(1)} GB, g = ${wl.flopPerUnit.toExponential(2)}`)
+  assert("preset: stateBytes > 100 GB", wl.stateBytes > 100e9 ? 1 : 0, 1)
+  assert("preset: flopPerUnit > 0", wl.flopPerUnit > 0 ? 1 : 0, 1)
+  assert("preset: egressBytesPerUnit = 4", wl.egressBytesPerUnit, 4)
 }
 
 // ===================================================================

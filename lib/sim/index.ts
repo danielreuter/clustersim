@@ -9,6 +9,7 @@ export type {
   CovertWorkloadTraining,
   TrainingSyncPolicy,
   Scenario,
+  DirectScenario,
   ThroughputEstimate,
   GammaResult,
   SimulationSnapshot,
@@ -18,10 +19,12 @@ export { isV2Workload } from "./types"
 
 export {
   simulate,
+  simulateDirect,
   composeGamma,
   dedicatedThroughput,
   verifiedComputeThroughput,
   sweep,
+  sweepDirect,
   logRange,
   linRange,
 } from "./gamma"
@@ -45,6 +48,11 @@ export {
   VERIFIER_FULL,
   VERIFIER_NO_SANITIZATION,
   honestLoadFromFractions,
+  computeHardwarePreset,
+  computeCovertPreset,
+  HARDWARE_PRESETS,
+  COVERT_PRESETS,
   MODEL_MAP,
   GPU_MAP,
 } from "./presets"
+export type { HardwarePresetConfig, CovertPresetConfig } from "./presets"

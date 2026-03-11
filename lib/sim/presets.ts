@@ -1,6 +1,7 @@
-import type { Hardware, CovertWorkloadInference, CovertWorkloadTraining, Verifier } from "./types"
+import type { Hardware, CovertWorkloadV1, CovertWorkloadInference, CovertWorkloadTraining, Verifier } from "./types"
 import { MODEL_MAP } from "@/lib/erdil/models"
 import { GPU_MAP } from "@/lib/erdil/gpus"
+import { rooflineLite, rooflineLiteTraining, deriveSyncIO, resolveHardware } from "./roofline"
 
 const GB = 1e9
 const KB = 1e3
@@ -132,6 +133,92 @@ export function honestLoadFromFractions(
     claimedComputeFlops: computeFrac * computeFlops,
     claimedMemoryBytes: memoryFrac * hbmBytes,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Preset snap helpers for DirectScenario
+// ---------------------------------------------------------------------------
+
+/** Compute hardware FLOP/s and HBM from GPU key + count */
+export function computeHardwarePreset(
+  gpuKey: string,
+  nGpu: number,
+  precisionBytes = 2,
+): { computeFlops: number; hbmBytes: number } {
+  const rh = resolveHardware({ name: "", gpuKey, nGpu }, precisionBytes)
+  return { computeFlops: rh.computeFlops, hbmBytes: rh.hbmBytes }
+}
+
+export type CovertPresetConfig = {
+  modelKey: string
+  kind: "inference" | "training"
+  contextLength?: number
+  syncPolicy?: import("./types").TrainingSyncPolicy
+}
+
+/** Compute covert workload V1 params from model + hardware via roofline */
+export function computeCovertPreset(
+  hardware: { computeFlops: number; hbmBytes: number },
+  config: CovertPresetConfig,
+): CovertWorkloadV1 {
+  const model = MODEL_MAP[config.modelKey]
+  if (!model) throw new Error(`Unknown model: ${config.modelKey}`)
+
+  const gpu = GPU_MAP["H100"] // dummy GPU for bandwidth calc (only used for hbmBandwidthBps)
+  // Estimate nGpu from total HBM
+  const nGpu = Math.max(1, Math.round(hardware.hbmBytes / gpu.hbmSizeBytes))
+
+  const isInference = config.kind === "inference"
+  const ctx = isInference ? (config.contextLength ?? 2048) : 1
+
+  const roofline = isInference
+    ? rooflineLite(model, gpu, nGpu, ctx, hardware.computeFlops, hardware.hbmBytes)
+    : rooflineLiteTraining(model, gpu, nGpu, hardware.computeFlops, hardware.hbmBytes)
+
+  const stateBytes = roofline.nPersist + roofline.workspace
+  const g = roofline.throughput.unitsPerSecond > 0
+    ? hardware.computeFlops / roofline.throughput.unitsPerSecond
+    : Infinity
+
+  let dIn = 0
+  let dOut = isInference ? 4 : 0
+  if (!isInference && config.syncPolicy) {
+    const sync = deriveSyncIO(config.syncPolicy)
+    dIn = sync.dIn
+    dOut = sync.dOut
+  }
+
+  return {
+    label: isInference ? `${config.modelKey} inference` : `Train ${config.modelKey}`,
+    kind: config.kind,
+    unit: isInference ? "token" : "train-token",
+    stateBytes,
+    persistBytes: roofline.nPersist,
+    flopPerUnit: g,
+    ingressBytesPerUnit: dIn,
+    egressBytesPerUnit: dOut,
+  }
+}
+
+export type HardwarePresetConfig = { gpuKey: string; nGpu: number }
+
+export const HARDWARE_PRESETS: Record<string, HardwarePresetConfig> = {
+  "8xH100": { gpuKey: "H100", nGpu: 8 },
+  "32xH100": { gpuKey: "H100", nGpu: 32 },
+  "8xH200": { gpuKey: "H200", nGpu: 8 },
+  "32xH200": { gpuKey: "H200", nGpu: 32 },
+  "8xA100": { gpuKey: "A100", nGpu: 8 },
+  "8xH20": { gpuKey: "H20", nGpu: 8 },
+}
+
+export const COVERT_PRESETS: Record<string, CovertPresetConfig> = {
+  "inf-llama8b": { modelKey: "Llama 3 8B", kind: "inference", contextLength: 4096 },
+  "inf-llama70b": { modelKey: "Llama 3 70B", kind: "inference", contextLength: 2048 },
+  "inf-llama405b": { modelKey: "Llama 3 405B", kind: "inference", contextLength: 2048 },
+  "inf-deepseekv3": { modelKey: "DeepSeek V3", kind: "inference", contextLength: 4096 },
+  "train-llama70b-nosync": { modelKey: "Llama 3 70B", kind: "training", syncPolicy: { mode: "none" } },
+  "train-llama70b-ckpt": { modelKey: "Llama 3 70B", kind: "training", syncPolicy: { mode: "checkpoint", bytesOutPerSync: 140e9, tokensPerSync: 1e6 } },
+  "train-llama70b-periodic": { modelKey: "Llama 3 70B", kind: "training", syncPolicy: { mode: "periodic-updates", bytesInPerSync: 140e9, bytesOutPerSync: 140e9, tokensPerSync: 1e6 } },
 }
 
 export { MODEL_MAP, GPU_MAP }

@@ -12,8 +12,8 @@
  *   computeUtil  — honest compute utilization 0-1                 (default: 0.5)
  *   memoryUtil   — honest memory utilization 0-1                  (default: 0.5)
  *   alpha        — proved compute fraction 0-1                    (default: 1.0)
- *   bOut         — covert egress bandwidth bytes/s                (default: 20000)
- *   bIn          — covert ingress bandwidth bytes/s               (default: 100000)
+ *   bOut         — covert egress bandwidth bytes/s                (default: 1000000)
+ *   bIn          — covert ingress bandwidth bytes/s               (default: 100000000)
  *   sanitization — enable memory sanitization                     (default: true)
  *   epochS       — sanitization epoch length seconds              (default: 5)
  *   downtimeS    — sanitization downtime seconds                  (default: 0.25)
@@ -35,6 +35,7 @@ type Input = {
   computeUtil?: number
   memoryUtil?: number
   alpha?: number
+  alphaMemory?: number
   bOut?: number
   bIn?: number
   sanitization?: boolean
@@ -64,8 +65,9 @@ function run(input: Input = {}) {
     },
     verifier: {
       alpha,
-      covertEgressBps: input.bOut ?? 20_000,
-      covertIngressBps: input.bIn ?? 100_000,
+      alphaMemory: input.alphaMemory ?? 1.0,
+      covertEgressBps: input.bOut ?? 1e6,
+      covertIngressBps: input.bIn ?? 100e6,
       sanitizationEnabled: input.sanitization ?? true,
       epochSeconds: input.epochS ?? 5,
       downtimeSeconds: input.downtimeS ?? 0.25,
@@ -85,7 +87,7 @@ function run(input: Input = {}) {
   const result: GammaResult = simulateDirect(scenario)
 
   console.log(JSON.stringify({
-    input: { gpu, count, computeUtil, memoryUtil, alpha, ...scenario.verifier, ...scenario.covert },
+    input: { gpu, count, computeUtil, memoryUtil, ...scenario.verifier, ...scenario.covert },
     gamma: result.gamma,
     finite: result.finite,
     dominant: result.dominant,

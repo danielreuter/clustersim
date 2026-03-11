@@ -55,7 +55,8 @@ export function composeGamma(
   const theta0 = dedicated.unitsPerSecond
 
   // --- Memory fit check ---
-  const fitMarginBytes = hbmBytes - honest.claimedMemoryBytes - covert.stateBytes
+  const verifiedMemoryBytes = (verifier.alphaMemory ?? 1) * honest.claimedMemoryBytes
+  const fitMarginBytes = hbmBytes - verifiedMemoryBytes - covert.stateBytes
 
   if (fitMarginBytes < 0) {
     return {
@@ -262,8 +263,9 @@ function simulateWithRoofline(
 
   // Verified-budget roofline (after α*f* consumed)
   const availFlops = Math.max(0, rh.computeFlops - verifier.alpha * honest.claimedComputeFlops)
-  const availHbm = Math.max(0, rh.hbmBytes - honest.claimedMemoryBytes)
-  const availHbmBw = Math.max(0, totalHbmBw * (1 - honest.claimedMemoryBytes / rh.hbmBytes))
+  const verifiedMemoryBytes = (verifier.alphaMemory ?? 1) * honest.claimedMemoryBytes
+  const availHbm = Math.max(0, rh.hbmBytes - verifiedMemoryBytes)
+  const availHbmBw = Math.max(0, totalHbmBw * (1 - verifiedMemoryBytes / rh.hbmBytes))
   const verifiedBudget = isInference
     ? rooflineLite(model, rh.gpu, rh.nGpu, ctx, availFlops, availHbm, availHbmBw)
     : rooflineLiteTraining(model, rh.gpu, rh.nGpu, availFlops, availHbm, availHbmBw)

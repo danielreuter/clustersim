@@ -23,7 +23,8 @@ export type HonestLoad = {
 }
 
 export type Verifier = {
-  alpha: number               // fraction of honest compute proven real [0,1]
+  alpha: number               // fraction of claimed compute proven real [0,1]
+  alphaMemory?: number        // fraction of claimed memory proven real [0,1] (defaults to 1)
   covertIngressBps: number    // b_in  — usable covert input rate (bytes/s)
   covertEgressBps: number     // b_out — usable covert output rate (bytes/s)
   survivingStateBytes: number // C — covert state surviving sanitization (bytes)

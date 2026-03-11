@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect, useRef } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
@@ -315,6 +315,454 @@ function LinearSlider({ label, tooltip, value, onValueChange, min, max, step, fo
 }
 
 // ---------------------------------------------------------------------------
+// Phase map axis definitions
+// ---------------------------------------------------------------------------
+
+type AxisDef = {
+  key: string
+  label: string
+  min: number
+  max: number
+  isLog: boolean
+  format: (v: number) => string
+  applyToScenario: (s: DirectScenario, v: number) => DirectScenario
+}
+
+const PHASE_AXES: AxisDef[] = [
+  {
+    key: "stateBytes", label: "Covert state size", min: 6, max: 13, isLog: true,
+    format: (v) => fmtBytes(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, covert: { ...s.covert, stateBytes: 10 ** v } }),
+  },
+  {
+    key: "flopPerUnit", label: "Compute per output", min: 3, max: 15, isLog: true,
+    format: (v) => fmt(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, covert: { ...s.covert, flopPerUnit: 10 ** v } }),
+  },
+  {
+    key: "dOut", label: "Egress per output", min: -1, max: 6, isLog: true,
+    format: (v) => v <= -1 ? "0" : fmtBytes(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, covert: { ...s.covert, egressBytesPerUnit: v <= -1 ? 0 : 10 ** v } }),
+  },
+  {
+    key: "dIn", label: "Ingress per input", min: -1, max: 6, isLog: true,
+    format: (v) => v <= -1 ? "0" : fmtBytes(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, covert: { ...s.covert, ingressBytesPerUnit: v <= -1 ? 0 : 10 ** v } }),
+  },
+  {
+    key: "bOut", label: "Covert egress bandwidth", min: 1, max: 12, isLog: true,
+    format: (v) => fmtBw(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, verifier: { ...s.verifier, covertEgressBps: 10 ** v } }),
+  },
+  {
+    key: "bIn", label: "Covert ingress bandwidth", min: 1, max: 12, isLog: true,
+    format: (v) => fmtBw(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, verifier: { ...s.verifier, covertIngressBps: 10 ** v } }),
+  },
+  {
+    key: "computeFlops", label: "Compute capacity", min: 12, max: 18, isLog: true,
+    format: (v) => fmt(10 ** v),
+    applyToScenario: (s, v) => ({
+      ...s,
+      hardware: { ...s.hardware, computeFlops: 10 ** v },
+      honest: { ...s.honest, claimedComputeFlops: s.honest.claimedComputeFlops * (10 ** v) / s.hardware.computeFlops },
+    }),
+  },
+  {
+    key: "hbmBytes", label: "Memory capacity", min: 9, max: 14, isLog: true,
+    format: (v) => fmtBytes(10 ** v),
+    applyToScenario: (s, v) => ({
+      ...s,
+      hardware: { ...s.hardware, hbmBytes: 10 ** v },
+      honest: { ...s.honest, claimedMemoryBytes: s.honest.claimedMemoryBytes * (10 ** v) / s.hardware.hbmBytes },
+    }),
+  },
+  {
+    key: "alpha", label: "Proved compute utilization", min: 0, max: 100, isLog: false,
+    format: (v) => `${v.toFixed(0)}%`,
+    applyToScenario: (s, v) => ({ ...s, verifier: { ...s.verifier, alpha: v / 100 } }),
+  },
+  {
+    key: "alphaMemory", label: "Proved memory utilization", min: 0, max: 100, isLog: false,
+    format: (v) => `${v.toFixed(0)}%`,
+    applyToScenario: (s, v) => ({ ...s, verifier: { ...s.verifier, alphaMemory: v / 100 } }),
+  },
+  {
+    key: "computeFrac", label: "Claimed compute util", min: 0, max: 100, isLog: false,
+    format: (v) => `${v.toFixed(0)}%`,
+    applyToScenario: (s, v) => ({
+      ...s,
+      honest: { ...s.honest, claimedComputeFlops: (v / 100) * s.hardware.computeFlops },
+    }),
+  },
+  {
+    key: "memoryFrac", label: "Claimed memory util", min: 0, max: 100, isLog: false,
+    format: (v) => `${v.toFixed(0)}%`,
+    applyToScenario: (s, v) => ({
+      ...s,
+      honest: { ...s.honest, claimedMemoryBytes: (v / 100) * s.hardware.hbmBytes },
+    }),
+  },
+  {
+    key: "epochS", label: "Epoch length", min: -1, max: 6, isLog: true,
+    format: (v) => fmtTime(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, verifier: { ...s.verifier, epochSeconds: 10 ** v } }),
+  },
+  {
+    key: "downtimeS", label: "Downtime per epoch", min: -2, max: 2, isLog: true,
+    format: (v) => fmtTime(10 ** v),
+    applyToScenario: (s, v) => ({ ...s, verifier: { ...s.verifier, downtimeSeconds: 10 ** v } }),
+  },
+  {
+    key: "survivingGB", label: "Covert persistence", min: 0, max: 200, isLog: false,
+    format: (v) => `${v.toFixed(0)} GB`,
+    applyToScenario: (s, v) => ({ ...s, verifier: { ...s.verifier, survivingStateBytes: v * 1e9 } }),
+  },
+]
+
+// Get current axis value from dashboard state
+function getAxisValue(key: string, state: {
+  computeFlopsExp: number; hbmBytesExp: number; computeFrac: number; memoryFrac: number
+  alpha: number; alphaMemory: number; bOutExp: number; bInExp: number; epochSExp: number; downtimeSExp: number
+  survivingGB: number; nBytesExp: number; gFlopExp: number; dInExp: number; dOutExp: number
+}): number {
+  switch (key) {
+    case "stateBytes": return state.nBytesExp
+    case "flopPerUnit": return state.gFlopExp
+    case "dOut": return state.dOutExp
+    case "dIn": return state.dInExp
+    case "bOut": return state.bOutExp
+    case "bIn": return state.bInExp
+    case "computeFlops": return state.computeFlopsExp
+    case "hbmBytes": return state.hbmBytesExp
+    case "alpha": return state.alpha
+    case "alphaMemory": return state.alphaMemory
+    case "computeFrac": return state.computeFrac
+    case "memoryFrac": return state.memoryFrac
+    case "epochS": return state.epochSExp
+    case "downtimeS": return state.downtimeSExp
+    case "survivingGB": return state.survivingGB
+    default: return 0
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Gamma → color mapping
+// ---------------------------------------------------------------------------
+
+function gammaToColor(gamma: number, finite: boolean): string {
+  if (!finite) return "#374151" // gray-700 for infeasible
+  const t = Math.log10(Math.max(1, gamma))
+  // green(1x) → yellow(~3x) → orange(~30x) → red(~1000x)
+  if (t <= 0) return "#22c55e"
+  if (t <= 0.5) { // 1x - ~3x: green → yellow
+    const f = t / 0.5
+    return lerpColor("#22c55e", "#eab308", f)
+  }
+  if (t <= 1.5) { // ~3x - ~30x: yellow → orange
+    const f = (t - 0.5) / 1.0
+    return lerpColor("#eab308", "#f97316", f)
+  }
+  if (t <= 3) { // ~30x - 1000x: orange → red
+    const f = (t - 1.5) / 1.5
+    return lerpColor("#f97316", "#ef4444", f)
+  }
+  return "#ef4444" // 1000x+: solid red
+}
+
+function lerpColor(a: string, b: string, t: number): string {
+  const pa = [parseInt(a.slice(1, 3), 16), parseInt(a.slice(3, 5), 16), parseInt(a.slice(5, 7), 16)]
+  const pb = [parseInt(b.slice(1, 3), 16), parseInt(b.slice(3, 5), 16), parseInt(b.slice(5, 7), 16)]
+  const r = Math.round(pa[0] + (pb[0] - pa[0]) * t)
+  const g = Math.round(pa[1] + (pb[1] - pa[1]) * t)
+  const bl = Math.round(pa[2] + (pb[2] - pa[2]) * t)
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${bl.toString(16).padStart(2, "0")}`
+}
+
+const DOMINANT_COLORS: Record<string, string> = {
+  compute: "#3b82f6",    // blue
+  egress: "#f97316",     // orange
+  ingress: "#a855f7",    // purple
+  duty: "#6b7280",       // gray
+  "memory-fit": "#ef4444", // red
+}
+
+// ---------------------------------------------------------------------------
+// PhaseMap component
+// ---------------------------------------------------------------------------
+
+const GRID_SIZE = 30
+
+function PhaseMap({ scenario, dashState }: {
+  scenario: DirectScenario
+  dashState: {
+    computeFlopsExp: number; hbmBytesExp: number; computeFrac: number; memoryFrac: number
+    alpha: number; alphaMemory: number; bOutExp: number; bInExp: number; epochSExp: number; downtimeSExp: number
+    survivingGB: number; nBytesExp: number; gFlopExp: number; dInExp: number; dOutExp: number
+  }
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [xAxisKey, setXAxisKey] = useState("stateBytes")
+  const [yAxisKey, setYAxisKey] = useState("bIn")
+  const [colorMode, setColorMode] = useState<"gamma" | "regime">("gamma")
+
+  const xAxis = PHASE_AXES.find(a => a.key === xAxisKey)!
+  const yAxis = PHASE_AXES.find(a => a.key === yAxisKey)!
+
+  // Compute grid of gamma values
+  const grid = useMemo(() => {
+    const results: GammaResult[][] = []
+    for (let yi = 0; yi < GRID_SIZE; yi++) {
+      const row: GammaResult[] = []
+      const yVal = yAxis.min + (yAxis.max - yAxis.min) * yi / (GRID_SIZE - 1)
+      for (let xi = 0; xi < GRID_SIZE; xi++) {
+        const xVal = xAxis.min + (xAxis.max - xAxis.min) * xi / (GRID_SIZE - 1)
+        const s1 = xAxis.applyToScenario(scenario, xVal)
+        const s2 = yAxis.applyToScenario(s1, yVal)
+        row.push(simulateDirect(s2))
+      }
+      results.push(row)
+    }
+    return results
+  }, [scenario, xAxis, yAxis])
+
+  // Crosshair position
+  const xCurrent = getAxisValue(xAxisKey, dashState)
+  const yCurrent = getAxisValue(yAxisKey, dashState)
+  const xFrac = (xCurrent - xAxis.min) / (xAxis.max - xAxis.min)
+  const yFrac = (yCurrent - yAxis.min) / (yAxis.max - yAxis.min)
+
+  // Paint canvas
+  const paint = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+
+    const W = canvas.width
+    const H = canvas.height
+    const cellW = W / GRID_SIZE
+    const cellH = H / GRID_SIZE
+
+    // Draw heatmap cells
+    for (let yi = 0; yi < GRID_SIZE; yi++) {
+      for (let xi = 0; xi < GRID_SIZE; xi++) {
+        const r = grid[yi][xi]
+        const color = colorMode === "gamma"
+          ? gammaToColor(r.gamma, r.finite)
+          : (DOMINANT_COLORS[r.dominant] ?? "#6b7280")
+        ctx.fillStyle = color
+        // Y axis is inverted (low values at bottom)
+        ctx.fillRect(xi * cellW, (GRID_SIZE - 1 - yi) * cellH, cellW + 0.5, cellH + 0.5)
+      }
+    }
+
+    // Contour lines (gamma mode only)
+    if (colorMode === "gamma") {
+      const contours = [1.5, 2, 3, 5, 10]
+      ctx.strokeStyle = "rgba(255,255,255,0.5)"
+      ctx.lineWidth = 1
+      for (const threshold of contours) {
+        ctx.beginPath()
+        const logT = Math.log10(threshold)
+        // Simple marching squares
+        for (let yi = 0; yi < GRID_SIZE - 1; yi++) {
+          for (let xi = 0; xi < GRID_SIZE - 1; xi++) {
+            const vals = [
+              grid[yi][xi].finite ? Math.log10(Math.max(1, grid[yi][xi].gamma)) : 999,
+              grid[yi][xi + 1].finite ? Math.log10(Math.max(1, grid[yi][xi + 1].gamma)) : 999,
+              grid[yi + 1][xi + 1].finite ? Math.log10(Math.max(1, grid[yi + 1][xi + 1].gamma)) : 999,
+              grid[yi + 1][xi].finite ? Math.log10(Math.max(1, grid[yi + 1][xi].gamma)) : 999,
+            ]
+            const bits = vals.map(v => v >= logT ? 1 : 0)
+            const code = bits[0] | (bits[1] << 1) | (bits[2] << 2) | (bits[3] << 3)
+            if (code === 0 || code === 15) continue
+
+            // Interpolate edge crossings
+            const cx = (xi + 0.5) * cellW
+            const cy = (GRID_SIZE - 1 - yi - 0.5) * cellH
+
+            // Simplified: just draw a small segment at the cell center for non-uniform cells
+            const edges: [number, number][] = []
+            // Top edge (0→1)
+            if ((bits[0] !== bits[1])) {
+              const t = (logT - vals[0]) / (vals[1] - vals[0])
+              edges.push([(xi + t) * cellW, (GRID_SIZE - 1 - yi) * cellH])
+            }
+            // Right edge (1→2)
+            if ((bits[1] !== bits[2])) {
+              const t = (logT - vals[1]) / (vals[2] - vals[1])
+              edges.push([(xi + 1) * cellW, (GRID_SIZE - 1 - yi - t) * cellH])
+            }
+            // Bottom edge (3→2)
+            if ((bits[3] !== bits[2])) {
+              const t = (logT - vals[3]) / (vals[2] - vals[3])
+              edges.push([(xi + t) * cellW, (GRID_SIZE - 1 - yi - 1) * cellH])
+            }
+            // Left edge (0→3)
+            if ((bits[0] !== bits[3])) {
+              const t = (logT - vals[0]) / (vals[3] - vals[0])
+              edges.push([xi * cellW, (GRID_SIZE - 1 - yi - t) * cellH])
+            }
+
+            if (edges.length >= 2) {
+              ctx.moveTo(edges[0][0], edges[0][1])
+              ctx.lineTo(edges[1][0], edges[1][1])
+            }
+          }
+        }
+        ctx.stroke()
+
+        // Label the contour
+        // Find a cell near the middle where this contour passes
+        const midY = Math.floor(GRID_SIZE / 2)
+        for (let xi = 0; xi < GRID_SIZE - 1; xi++) {
+          const v0 = grid[midY][xi].finite ? Math.log10(Math.max(1, grid[midY][xi].gamma)) : 999
+          const v1 = grid[midY][xi + 1].finite ? Math.log10(Math.max(1, grid[midY][xi + 1].gamma)) : 999
+          if ((v0 < logT) !== (v1 < logT)) {
+            const t = (logT - v0) / (v1 - v0)
+            const lx = (xi + t) * cellW
+            const ly = (GRID_SIZE - 1 - midY) * cellH
+            ctx.fillStyle = "rgba(255,255,255,0.8)"
+            ctx.font = "10px monospace"
+            ctx.fillText(`${threshold}×`, lx + 2, ly - 2)
+            break
+          }
+        }
+      }
+    }
+
+    // Crosshair
+    const crossX = Math.max(0, Math.min(1, xFrac)) * W
+    const crossY = (1 - Math.max(0, Math.min(1, yFrac))) * H
+    ctx.strokeStyle = "rgba(255,255,255,0.8)"
+    ctx.lineWidth = 1
+    ctx.setLineDash([4, 3])
+    ctx.beginPath()
+    ctx.moveTo(crossX, 0); ctx.lineTo(crossX, H)
+    ctx.moveTo(0, crossY); ctx.lineTo(W, crossY)
+    ctx.stroke()
+    ctx.setLineDash([])
+    // Dot
+    ctx.beginPath()
+    ctx.arc(crossX, crossY, 4, 0, Math.PI * 2)
+    ctx.fillStyle = "white"
+    ctx.fill()
+    ctx.strokeStyle = "rgba(0,0,0,0.5)"
+    ctx.lineWidth = 1
+    ctx.stroke()
+  }, [grid, colorMode, xFrac, yFrac, xAxis, yAxis])
+
+  useEffect(() => { paint() }, [paint])
+
+  // Generate tick labels
+  const xTicks = Array.from({ length: 5 }, (_, i) => {
+    const v = xAxis.min + (xAxis.max - xAxis.min) * i / 4
+    return { frac: i / 4, label: xAxis.format(v) }
+  })
+  const yTicks = Array.from({ length: 5 }, (_, i) => {
+    const v = yAxis.min + (yAxis.max - yAxis.min) * i / 4
+    return { frac: 1 - i / 4, label: yAxis.format(v) }
+  })
+
+  return (
+    <div className="space-y-3">
+      {/* Controls row */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">X:</span>
+          <Select value={xAxisKey} onValueChange={setXAxisKey}>
+            <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {PHASE_AXES.filter(a => a.key !== yAxisKey).map(a => (
+                <SelectItem key={a.key} value={a.key}>{a.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Y:</span>
+          <Select value={yAxisKey} onValueChange={setYAxisKey}>
+            <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {PHASE_AXES.filter(a => a.key !== xAxisKey).map(a => (
+                <SelectItem key={a.key} value={a.key}>{a.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="ml-auto flex items-center gap-1 bg-muted rounded-md p-0.5">
+          <button
+            onClick={() => setColorMode("gamma")}
+            className={`px-2 py-0.5 rounded text-xs transition-colors ${colorMode === "gamma" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
+          >Gamma</button>
+          <button
+            onClick={() => setColorMode("regime")}
+            className={`px-2 py-0.5 rounded text-xs transition-colors ${colorMode === "regime" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
+          >Regime</button>
+        </div>
+      </div>
+
+      {/* Canvas with axis labels */}
+      <div className="relative" ref={containerRef}>
+        {/* Y-axis tick labels */}
+        <div className="absolute left-0 top-0 bottom-6 w-14 flex flex-col justify-between items-end pr-1.5">
+          {yTicks.map((t, i) => (
+            <span key={i} className="text-[10px] font-mono text-muted-foreground leading-none">{t.label}</span>
+          ))}
+        </div>
+
+        {/* Canvas */}
+        <div className="ml-14 mb-6">
+          <canvas
+            ref={canvasRef}
+            width={600}
+            height={380}
+            className="w-full rounded border border-border"
+            style={{ height: "380px", imageRendering: "pixelated" }}
+          />
+        </div>
+
+        {/* X-axis tick labels */}
+        <div className="ml-14 flex justify-between">
+          {xTicks.map((t, i) => (
+            <span key={i} className="text-[10px] font-mono text-muted-foreground leading-none">{t.label}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* Color legend */}
+      {colorMode === "gamma" ? (
+        <div className="flex items-center gap-2 ml-14">
+          <div className="flex-1 h-3 rounded-sm overflow-hidden flex">
+            {Array.from({ length: 60 }, (_, i) => {
+              const t = i / 59
+              // Map to gamma range: 1x → 10000x
+              const gamma = 10 ** (t * 4)
+              return <div key={i} className="flex-1 h-full" style={{ backgroundColor: gammaToColor(gamma, true) }} />
+            })}
+            <div className="w-6 h-full" style={{ backgroundColor: "#374151" }} />
+          </div>
+          <div className="flex gap-3 text-[10px] text-muted-foreground font-mono shrink-0">
+            <span>1×</span><span>10×</span><span>1K×</span><span>∞</span>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3 ml-14 text-[10px]">
+          {Object.entries(DOMINANT_COLORS).map(([key, color]) => (
+            <span key={key} className="flex items-center gap-1">
+              <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: color }} />
+              <span className="text-muted-foreground capitalize">{key === "memory-fit" ? "Memory" : key}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main Dashboard
 // ---------------------------------------------------------------------------
 
@@ -333,7 +781,7 @@ const DEFAULT_COVERT = computeCovertPreset(DEFAULT_HW, COVERT_PRESETS["inf-llama
 
 type DashState = {
   cfe: number; hbe: number  // hardware: computeFlopsExp, hbmBytesExp
-  cf: number; mf: number; a: number  // honest load
+  cf: number; mf: number; a: number; am?: number  // honest load + verification
   bo: number; bi: number; sn: boolean; ep: number; dt: number; sg: number  // verifier
   ne: number; ge: number; die: number; doe: number  // covert
 }
@@ -395,8 +843,9 @@ export function GammaDashboard() {
 
   // Verifier
   const [alpha, setAlpha] = useState(initial?.a ?? 100)
-  const [bOutExp, setBOutExp] = useState(initial?.bo ?? Math.log10(20e3))
-  const [bInExp, setBInExp] = useState(initial?.bi ?? Math.log10(100e3))
+  const [alphaMemory, setAlphaMemory] = useState(initial?.am ?? 100)
+  const [bOutExp, setBOutExp] = useState(initial?.bo ?? Math.log10(1e6))
+  const [bInExp, setBInExp] = useState(initial?.bi ?? Math.log10(100e6))
   const [sanitization, setSanitization] = useState(initial?.sn ?? true)
   const [epochSExp, setEpochSExp] = useState(initial?.ep ?? Math.log10(5))
   const epochS = 10 ** epochSExp
@@ -404,10 +853,6 @@ export function GammaDashboard() {
   const downtimeS = 10 ** downtimeSExp
   const [survivingGB, setSurvivingGB] = useState(initial?.sg ?? 17)
 
-  // Auto-clamp honest compute utilization to matmul transparency floor
-  useEffect(() => {
-    if (computeFrac < alpha) setComputeFrac(alpha)
-  }, [alpha])
 
   // Covert workload: raw log-scale sliders
   const [nBytesExp, setNBytesExp] = useState(initial?.ne ?? Math.log10(DEFAULT_COVERT.stateBytes))
@@ -429,6 +874,7 @@ export function GammaDashboard() {
     setComputeFrac(state.cf)
     setMemoryFrac(state.mf)
     setAlpha(state.a)
+    if (state.am != null) setAlphaMemory(state.am)
     setBOutExp(state.bo)
     setBInExp(state.bi)
     setSanitization(state.sn)
@@ -481,6 +927,7 @@ export function GammaDashboard() {
     },
     verifier: {
       alpha: alpha / 100,
+      alphaMemory: alphaMemory / 100,
       covertIngressBps: 10 ** bInExp,
       covertEgressBps: 10 ** bOutExp,
       survivingStateBytes: survivingGB * 1e9,
@@ -489,7 +936,7 @@ export function GammaDashboard() {
       sanitizationEnabled: sanitization,
     },
     covert,
-  }), [computeFlops, hbmBytes, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochS, downtimeSExp, survivingGB, covert])
+  }), [computeFlops, hbmBytes, computeFrac, memoryFrac, alpha, alphaMemory, bOutExp, bInExp, sanitization, epochS, downtimeSExp, survivingGB, covert])
 
   const result = useMemo(() => simulateDirect(scenario), [scenario])
 
@@ -505,7 +952,7 @@ export function GammaDashboard() {
   const handleCopyLink = () => {
     const state: DashState = {
       cfe: computeFlopsExp, hbe: hbmBytesExp,
-      cf: computeFrac, mf: memoryFrac, a: alpha,
+      cf: computeFrac, mf: memoryFrac, a: alpha, am: alphaMemory,
       bo: bOutExp, bi: bInExp, sn: sanitization, ep: epochSExp, dt: downtimeSExp, sg: survivingGB,
       ne: nBytesExp, ge: gFlopExp, die: dInExp, doe: dOutExp,
     }
@@ -540,8 +987,8 @@ export function GammaDashboard() {
           <ThemeToggle />
         </div>
 
-        {/* === Result Card (sticky) === */}
-        <div className="sticky top-0 z-10 bg-background pb-4">
+        {/* === Result Card === */}
+        <div className="pb-4">
           <Card>
             <CardContent className="pt-6">
               {/* Header: Γ value + copy button */}
@@ -575,54 +1022,74 @@ export function GammaDashboard() {
                 </button>
               </div>
 
-              {/* --- Layer 1: Operational overhead --- */}
-              <div className="mb-5">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Operational overhead</span>
-                  <span className="flex items-center gap-3">
-                    <LegendDot color="bg-foreground/35" label="Non-bottleneck" />
-                    <LegendDot color="bg-foreground/80" label="Bottleneck" />
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  <OpBar label="Compute" value={result.gammaCompute} max={opMax} isBottleneck={opBottleneck === "compute"} disabled={memoryOverflow || dutyOverflow} />
-                  <OpBar label="Ingress" value={result.gammaIngress} max={opMax} isBottleneck={opBottleneck === "ingress"} disabled={memoryOverflow || dutyOverflow} />
-                  <OpBar label="Egress" value={result.gammaEgress} max={opMax} isBottleneck={opBottleneck === "egress"} disabled={memoryOverflow || dutyOverflow} />
-                </div>
-              </div>
+              <Tabs defaultValue="bottlenecks">
+                <TabsList className="mb-4">
+                  <TabsTrigger value="bottlenecks" className="text-xs">Bottlenecks</TabsTrigger>
+                  <TabsTrigger value="phases" className="text-xs">Phases</TabsTrigger>
+                </TabsList>
 
-              {/* --- Layer 2: Memory fit --- */}
-              <div className="mb-5">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory utilization</span>
-                  <span className="flex items-center gap-3">
-                    <LegendDot color="bg-red-400" label="Covert state" />
-                    <LegendDot color="bg-blue-300" label="Honest state" />
-                  </span>
-                </div>
-                <MemoryFitBar
-                  result={result}
-                  totalHbm={hbmBytes}
-                  honestMem={scenario.honest.claimedMemoryBytes}
-                  covertState={covert.stateBytes}
-                  disabled={dutyOverflow}
-                />
-              </div>
-
-              {/* --- Layer 3: Sanitization epoch --- */}
-              {sanitization && (
-                <div className="mb-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sanitization epoch</span>
-                    <span className="flex items-center gap-3">
-                      <LegendDot color="bg-emerald-400" label="Sanitization" />
-                      <LegendDot color="bg-pink-300" label="Covert download" />
-                      <LegendDot color="bg-red-400" label="Covert work" />
-                    </span>
+                <TabsContent value="bottlenecks" className="mt-0">
+                  {/* --- Layer 1: Operational overhead --- */}
+                  <div className="mb-5">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Operational overhead</span>
+                      <span className="flex items-center gap-3">
+                        <LegendDot color="bg-foreground/35" label="Non-bottleneck" />
+                        <LegendDot color="bg-foreground/80" label="Bottleneck" />
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      <OpBar label="Compute" value={result.gammaCompute} max={opMax} isBottleneck={opBottleneck === "compute"} disabled={memoryOverflow || dutyOverflow} />
+                      <OpBar label="Ingress" value={result.gammaIngress} max={opMax} isBottleneck={opBottleneck === "ingress"} disabled={memoryOverflow || dutyOverflow} />
+                      <OpBar label="Egress" value={result.gammaEgress} max={opMax} isBottleneck={opBottleneck === "egress"} disabled={memoryOverflow || dutyOverflow} />
+                    </div>
                   </div>
-                  <EpochTimeline result={result} epochS={epochS} downtimeS={downtimeS} disabled={memoryOverflow} overflows={!!dutyOverflow} />
-                </div>
-              )}
+
+                  {/* --- Layer 2: Memory fit --- */}
+                  <div className="mb-5">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory utilization</span>
+                      <span className="flex items-center gap-3">
+                        <LegendDot color="bg-red-400" label="Covert state" />
+                        <LegendDot color="bg-blue-300" label="Honest state" />
+                      </span>
+                    </div>
+                    <MemoryFitBar
+                      result={result}
+                      totalHbm={hbmBytes}
+                      honestMem={scenario.honest.claimedMemoryBytes}
+                      covertState={covert.stateBytes}
+                      disabled={dutyOverflow}
+                    />
+                  </div>
+
+                  {/* --- Layer 3: Sanitization epoch --- */}
+                  {sanitization && (
+                    <div className="mb-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sanitization epoch</span>
+                        <span className="flex items-center gap-3">
+                          <LegendDot color="bg-emerald-400" label="Sanitization" />
+                          <LegendDot color="bg-pink-300" label="Covert download" />
+                          <LegendDot color="bg-red-400" label="Covert work" />
+                        </span>
+                      </div>
+                      <EpochTimeline result={result} epochS={epochS} downtimeS={downtimeS} disabled={memoryOverflow} overflows={!!dutyOverflow} />
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="phases" className="mt-0">
+                  <PhaseMap
+                    scenario={scenario}
+                    dashState={{
+                      computeFlopsExp, hbmBytesExp, computeFrac, memoryFrac,
+                      alpha, alphaMemory, bOutExp, bInExp, epochSExp, downtimeSExp,
+                      survivingGB, nBytesExp, gFlopExp, dInExp, dOutExp,
+                    }}
+                  />
+                </TabsContent>
+              </Tabs>
 
           </CardContent>
         </Card>
@@ -698,16 +1165,15 @@ export function GammaDashboard() {
                 {/* Honest workload */}
                 <TabsContent value="honest" className="space-y-3 mt-0 min-h-[320px]">
                   <LinearSlider
-                    label="Honest compute utilization"
-                    tooltip="Fraction of compute the prover claims the honest workload uses. Matmul transparency sets a verified floor on this value."
+                    label="Claimed compute utilization"
+                    tooltip="Fraction of compute the prover claims the honest workload uses"
                     value={computeFrac}
                     onValueChange={setComputeFrac}
                     min={0} max={100} step={1}
                     formatValue={(v) => `${v}%`}
-                    clampMin={alpha}
                   />
                   <LinearSlider
-                    label="Honest memory utilization"
+                    label="Claimed memory utilization"
                     tooltip="Fraction of HBM the prover claims the honest workload occupies"
                     value={memoryFrac}
                     onValueChange={setMemoryFrac}
@@ -779,18 +1245,26 @@ export function GammaDashboard() {
             <CardContent>
               <Tabs defaultValue="matmul">
                 <TabsList className="grid w-full grid-cols-3 mb-4">
-                  <TabsTrigger value="matmul" className="text-xs">Matmul</TabsTrigger>
+                  <TabsTrigger value="matmul" className="text-xs">Compute</TabsTrigger>
                   <TabsTrigger value="network" className="text-xs">Network</TabsTrigger>
                   <TabsTrigger value="memory" className="text-xs">Memory</TabsTrigger>
                 </TabsList>
 
-                {/* Matmul transparency */}
+                {/* Compute transparency */}
                 <TabsContent value="matmul" className="space-y-3 mt-0 min-h-[240px]">
                   <LinearSlider
-                    label="Proved compute fraction"
-                    tooltip="Fraction of claimed compute that matmul transparency proves was actually performed"
+                    label="Proved compute utilization (share of claimed)"
+                    tooltip="Share of claimed compute that the verifier can prove was actually performed (e.g. via matmul transparency)"
                     value={alpha}
                     onValueChange={setAlpha}
+                    min={0} max={100} step={1}
+                    formatValue={(v) => `${v}%`}
+                  />
+                  <LinearSlider
+                    label="Proved memory utilization (share of claimed)"
+                    tooltip="Share of claimed memory that the verifier can prove is actually occupied by the honest workload"
+                    value={alphaMemory}
+                    onValueChange={setAlphaMemory}
                     min={0} max={100} step={1}
                     formatValue={(v) => `${v}%`}
                   />

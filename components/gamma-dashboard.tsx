@@ -3,7 +3,6 @@
 import { useState, useMemo, useEffect, useRef } from "react"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -13,19 +12,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import {
   simulateDirect,
-  sweepDirect,
-  logRange,
   computeHardwarePreset,
   computeCovertPreset,
-  HARDWARE_PRESETS,
   COVERT_PRESETS,
-  VERIFIER_FULL,
   type DirectScenario,
   type CovertWorkloadV1,
   type GammaResult,
-  type SweepPoint,
 } from "@/lib/sim"
 
 // ---------------------------------------------------------------------------
@@ -69,6 +69,28 @@ function fmtTime(s: number): string {
   if (s >= 3600) return `${(s / 3600).toFixed(1)} hrs`
   if (s >= 60) return `${(s / 60).toFixed(1)} min`
   return `${s.toFixed(2)}s`
+}
+
+// ---------------------------------------------------------------------------
+// Info icon for tooltips
+// ---------------------------------------------------------------------------
+
+function InfoTip({ text }: { text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-muted text-muted-foreground text-[9px] font-medium leading-none hover:bg-muted-foreground/20 transition-colors ml-1"
+        >
+          i
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4}>
+        {text}
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -215,61 +237,12 @@ function MemoryFitBar({ result, totalHbm, honestMem, covertState, disabled }: { 
 }
 
 // ---------------------------------------------------------------------------
-// Sweep chart
-// ---------------------------------------------------------------------------
-
-function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; paramLabel: string; xFormatter?: (v: number) => string }) {
-  const W = 400
-  const H = 120
-  const PAD = { top: 10, right: 10, bottom: 24, left: 50 }
-  const w = W - PAD.left - PAD.right
-  const h = H - PAD.top - PAD.bottom
-
-  const finitePoints = points.filter((p) => Number.isFinite(p.result.gamma))
-  if (finitePoints.length < 2) {
-    return <div className="text-sm text-muted-foreground italic">All values infeasible</div>
-  }
-
-  const xMin = Math.log10(finitePoints[0].value)
-  const xMax = Math.log10(finitePoints[finitePoints.length - 1].value)
-  const yMax = Math.log10(Math.max(...finitePoints.map((p) => p.result.gamma), 10))
-  const yMin = 0
-
-  const toX = (v: number) => PAD.left + ((Math.log10(v) - xMin) / (xMax - xMin)) * w
-  const toY = (g: number) => PAD.top + h - ((Math.log10(Math.max(1, g)) - yMin) / (yMax - yMin)) * h
-
-  const path = finitePoints.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.value).toFixed(1)},${toY(p.result.gamma).toFixed(1)}`).join(" ")
-
-  const fmtX = xFormatter ?? fmtBw
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-md">
-      <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={PAD.top + h} stroke="currentColor" strokeOpacity={0.2} />
-      <line x1={PAD.left} y1={PAD.top + h} x2={PAD.left + w} y2={PAD.top + h} stroke="currentColor" strokeOpacity={0.2} />
-      <line x1={PAD.left} y1={toY(1)} x2={PAD.left + w} y2={toY(1)} stroke="currentColor" strokeOpacity={0.1} strokeDasharray="4 2" />
-      <text x={PAD.left - 4} y={toY(1) + 3} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>1×</text>
-      <text x={PAD.left - 4} y={PAD.top + 8} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>{fmtGamma(10 ** yMax)}</text>
-      <text x={PAD.left} y={H - 2} fontSize={9} fill="currentColor" opacity={0.4}>{fmtX(finitePoints[0].value)}</text>
-      <text x={PAD.left + w} y={H - 2} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>{fmtX(finitePoints[finitePoints.length - 1].value)}</text>
-      <text x={PAD.left + w / 2} y={H - 2} textAnchor="middle" fontSize={9} fill="currentColor" opacity={0.5}>{paramLabel}</text>
-      <path d={path} fill="none" stroke="var(--primary)" strokeWidth={2} />
-      {finitePoints.map((p, i) => {
-        const prev = i > 0 ? finitePoints[i - 1] : null
-        if (prev && prev.result.dominant !== p.result.dominant) {
-          return <circle key={i} cx={toX(p.value)} cy={toY(p.result.gamma)} r={3} fill="var(--destructive)" />
-        }
-        return null
-      })}
-    </svg>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Log-scale slider helper
 // ---------------------------------------------------------------------------
 
-function LogSlider({ label, valueExp, onValueExpChange, min, max, step, formatValue }: {
+function LogSlider({ label, tooltip, valueExp, onValueExpChange, min, max, step, formatValue }: {
   label: string
+  tooltip?: string
   valueExp: number
   onValueExpChange: (v: number) => void
   min: number
@@ -280,7 +253,10 @@ function LogSlider({ label, valueExp, onValueExpChange, min, max, step, formatVa
   return (
     <div>
       <div className="flex justify-between">
-        <Label className="text-xs text-muted-foreground">{label}</Label>
+        <Label className="text-xs text-muted-foreground">
+          {label}
+          {tooltip && <InfoTip text={tooltip} />}
+        </Label>
         <span className="text-xs font-mono">{formatValue(10 ** valueExp)}</span>
       </div>
       <Slider
@@ -294,8 +270,57 @@ function LogSlider({ label, valueExp, onValueExpChange, min, max, step, formatVa
 }
 
 // ---------------------------------------------------------------------------
+// Linear slider helper
+// ---------------------------------------------------------------------------
+
+function LinearSlider({ label, tooltip, value, onValueChange, min, max, step, formatValue, clampMin }: {
+  label: string
+  tooltip?: string
+  value: number
+  onValueChange: (v: number) => void
+  min: number
+  max: number
+  step: number
+  formatValue: (v: number) => string
+  clampMin?: number
+}) {
+  const effectiveMin = clampMin != null ? Math.max(min, clampMin) : min
+  const atFloor = clampMin != null && clampMin > min && value <= clampMin
+  return (
+    <div>
+      <div className="flex justify-between">
+        <Label className={`text-xs ${atFloor ? "text-red-500" : "text-muted-foreground"}`}>
+          {label}
+          {tooltip && <InfoTip text={tooltip} />}
+          {atFloor && <span className="ml-1 text-[10px] text-red-500/70">(at proof-of-work floor)</span>}
+        </Label>
+        <span className={`text-xs font-mono ${atFloor ? "text-red-500" : ""}`}>{formatValue(value)}</span>
+      </div>
+      <div className="relative mt-1">
+        {clampMin != null && clampMin > min && (
+          <div
+            className="absolute top-1/2 -translate-y-1/2 h-1.5 rounded-full bg-red-500/30"
+            style={{ width: `${((clampMin - min) / (max - min)) * 100}%` }}
+          />
+        )}
+        <Slider
+          value={[value]}
+          onValueChange={([v]) => onValueChange(Math.max(v, effectiveMin))}
+          min={min} max={max} step={step}
+          className={atFloor ? "[&_[data-slot=slider-range]]:bg-red-500 [&_[data-slot=slider-thumb]]:border-red-500" : ""}
+        />
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main Dashboard
 // ---------------------------------------------------------------------------
+
+// GPU options for hardware preset
+const GPU_KEYS = ["H100", "H200", "A100", "H20", "B200"]
+const GPU_COUNTS = [1, 2, 4, 8, 16, 32, 64, 72]
 
 // Default hardware: 8xH100
 const DEFAULT_HW = computeHardwarePreset("H100", 8)
@@ -310,7 +335,7 @@ type DashState = {
   cfe: number; hbe: number  // hardware: computeFlopsExp, hbmBytesExp
   cf: number; mf: number; a: number  // honest load
   bo: number; bi: number; sn: boolean; ep: number; dt: number; sg: number  // verifier
-  ne: number; ge: number; die: number; dien: boolean; doe: number; doen: boolean  // covert
+  ne: number; ge: number; die: number; doe: number  // covert
 }
 
 function encodeState(s: DashState): string {
@@ -340,14 +365,12 @@ function decodeState(hash: string): DashState | null {
         bi: parsed.bi ?? Math.log10(100e3),
         sn: parsed.sn ?? true,
         ep: parsed.ep ?? Math.log10(5),
-        dt: parsed.dt ?? 0.25,
+        dt: parsed.dt ?? Math.log10(0.25),
         sg: parsed.sg ?? 17,
         ne: covert ? Math.log10(covert.stateBytes) : Math.log10(DEFAULT_COVERT.stateBytes),
         ge: covert ? Math.log10(covert.flopPerUnit) : Math.log10(DEFAULT_COVERT.flopPerUnit),
-        die: covert && covert.ingressBytesPerUnit > 0 ? Math.log10(covert.ingressBytesPerUnit) : 0,
-        dien: covert ? covert.ingressBytesPerUnit > 0 : DEFAULT_COVERT.ingressBytesPerUnit > 0,
-        doe: covert && covert.egressBytesPerUnit > 0 ? Math.log10(covert.egressBytesPerUnit) : 0,
-        doen: covert ? covert.egressBytesPerUnit > 0 : DEFAULT_COVERT.egressBytesPerUnit > 0,
+        die: covert && covert.ingressBytesPerUnit > 0 ? Math.log10(covert.ingressBytesPerUnit) : -1,
+        doe: covert && covert.egressBytesPerUnit > 0 ? Math.log10(covert.egressBytesPerUnit) : -1,
       }
     }
     return null
@@ -361,6 +384,10 @@ export function GammaDashboard() {
   // Hardware: raw log-scale sliders
   const [computeFlopsExp, setComputeFlopsExp] = useState(initial?.cfe ?? Math.log10(DEFAULT_HW.computeFlops))
   const [hbmBytesExp, setHbmBytesExp] = useState(initial?.hbe ?? Math.log10(DEFAULT_HW.hbmBytes))
+
+  // Hardware preset selectors
+  const [gpuKey, setGpuKey] = useState("H100")
+  const [gpuCount, setGpuCount] = useState(8)
 
   // Honest load
   const [computeFrac, setComputeFrac] = useState(initial?.cf ?? 50)
@@ -377,13 +404,18 @@ export function GammaDashboard() {
   const downtimeS = 10 ** downtimeSExp
   const [survivingGB, setSurvivingGB] = useState(initial?.sg ?? 17)
 
+  // Auto-clamp honest compute utilization to matmul transparency floor
+  useEffect(() => {
+    if (computeFrac < alpha) setComputeFrac(alpha)
+  }, [alpha])
+
   // Covert workload: raw log-scale sliders
   const [nBytesExp, setNBytesExp] = useState(initial?.ne ?? Math.log10(DEFAULT_COVERT.stateBytes))
   const [gFlopExp, setGFlopExp] = useState(initial?.ge ?? Math.log10(DEFAULT_COVERT.flopPerUnit))
-  const [dInExp, setDInExp] = useState(initial?.die ?? (DEFAULT_COVERT.ingressBytesPerUnit > 0 ? Math.log10(DEFAULT_COVERT.ingressBytesPerUnit) : 0))
-  const [dInEnabled, setDInEnabled] = useState(initial?.dien ?? DEFAULT_COVERT.ingressBytesPerUnit > 0)
-  const [dOutExp, setDOutExp] = useState(initial?.doe ?? (DEFAULT_COVERT.egressBytesPerUnit > 0 ? Math.log10(DEFAULT_COVERT.egressBytesPerUnit) : 0))
-  const [dOutEnabled, setDOutEnabled] = useState(initial?.doen ?? DEFAULT_COVERT.egressBytesPerUnit > 0)
+  // d_in/d_out: use -1 as sentinel for "off" (0 bytes). Slider min is -1.
+  const DIO_OFF = -1
+  const [dInExp, setDInExp] = useState(initial?.die ?? (DEFAULT_COVERT.ingressBytesPerUnit > 0 ? Math.log10(DEFAULT_COVERT.ingressBytesPerUnit) : DIO_OFF))
+  const [dOutExp, setDOutExp] = useState(initial?.doe ?? (DEFAULT_COVERT.egressBytesPerUnit > 0 ? Math.log10(DEFAULT_COVERT.egressBytesPerUnit) : DIO_OFF))
 
   // Re-apply URL hash state after mount (handles cases where hash isn't available during initial render)
   const didApplyHash = useRef(initial !== null)
@@ -406,19 +438,15 @@ export function GammaDashboard() {
     setNBytesExp(state.ne)
     setGFlopExp(state.ge)
     setDInExp(state.die)
-    setDInEnabled(state.dien)
     setDOutExp(state.doe)
-    setDOutEnabled(state.doen)
   }, [])
 
   const computeFlops = 10 ** computeFlopsExp
   const hbmBytes = 10 ** hbmBytesExp
 
   // Snap hardware preset
-  const snapHardware = (key: string) => {
-    const p = HARDWARE_PRESETS[key]
-    if (!p) return
-    const hw = computeHardwarePreset(p.gpuKey, p.nGpu)
+  const snapHardware = (gpu: string, count: number) => {
+    const hw = computeHardwarePreset(gpu, count)
     setComputeFlopsExp(Math.log10(hw.computeFlops))
     setHbmBytesExp(Math.log10(hw.hbmBytes))
   }
@@ -431,18 +459,8 @@ export function GammaDashboard() {
     const wl = computeCovertPreset(hw, config)
     setNBytesExp(Math.log10(Math.max(1, wl.stateBytes)))
     setGFlopExp(Math.log10(Math.max(1, wl.flopPerUnit)))
-    if (wl.ingressBytesPerUnit > 0) {
-      setDInExp(Math.log10(wl.ingressBytesPerUnit))
-      setDInEnabled(true)
-    } else {
-      setDInEnabled(false)
-    }
-    if (wl.egressBytesPerUnit > 0) {
-      setDOutExp(Math.log10(wl.egressBytesPerUnit))
-      setDOutEnabled(true)
-    } else {
-      setDOutEnabled(false)
-    }
+    setDInExp(wl.ingressBytesPerUnit > 0 ? Math.log10(wl.ingressBytesPerUnit) : DIO_OFF)
+    setDOutExp(wl.egressBytesPerUnit > 0 ? Math.log10(wl.egressBytesPerUnit) : DIO_OFF)
   }
 
   const covert: CovertWorkloadV1 = useMemo(() => ({
@@ -451,9 +469,9 @@ export function GammaDashboard() {
     unit: "unit",
     stateBytes: 10 ** nBytesExp,
     flopPerUnit: 10 ** gFlopExp,
-    ingressBytesPerUnit: dInEnabled ? 10 ** dInExp : 0,
-    egressBytesPerUnit: dOutEnabled ? 10 ** dOutExp : 0,
-  }), [nBytesExp, gFlopExp, dInExp, dInEnabled, dOutExp, dOutEnabled])
+    ingressBytesPerUnit: dInExp <= DIO_OFF ? 0 : 10 ** dInExp,
+    egressBytesPerUnit: dOutExp <= DIO_OFF ? 0 : 10 ** dOutExp,
+  }), [nBytesExp, gFlopExp, dInExp, dOutExp])
 
   const scenario: DirectScenario = useMemo(() => ({
     hardware: { computeFlops, hbmBytes },
@@ -489,7 +507,7 @@ export function GammaDashboard() {
       cfe: computeFlopsExp, hbe: hbmBytesExp,
       cf: computeFrac, mf: memoryFrac, a: alpha,
       bo: bOutExp, bi: bInExp, sn: sanitization, ep: epochSExp, dt: downtimeSExp, sg: survivingGB,
-      ne: nBytesExp, ge: gFlopExp, die: dInExp, dien: dInEnabled, doe: dOutExp, doen: dOutEnabled,
+      ne: nBytesExp, ge: gFlopExp, die: dInExp, doe: dOutExp,
     }
     const encoded = encodeState(state)
     const url = `${window.location.origin}${window.location.pathname}#${encoded}`
@@ -497,37 +515,6 @@ export function GammaDashboard() {
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 2000)
   }
-
-  // Sweep: b_out
-  const bOutSweep = useMemo(
-    () => logRange(1, 10, 60).map((v) => ({
-      value: v,
-      result: simulateDirect({ ...scenario, verifier: { ...scenario.verifier, covertEgressBps: v } }),
-    })),
-    [scenario],
-  )
-
-  // Sweep: proven compute share
-  const computeSweep = useMemo(
-    () => logRange(-2, Math.log10(0.99), 50).map((v) => ({
-      value: v,
-      result: simulateDirect({
-        ...scenario,
-        honest: { ...scenario.honest, claimedComputeFlops: v * computeFlops },
-        verifier: { ...scenario.verifier, alpha: 1 },
-      }),
-    })),
-    [scenario, computeFlops],
-  )
-
-  // Sweep: covert state (n)
-  const nSweep = useMemo(
-    () => logRange(6, 13, 60).map((v) => ({
-      value: v,
-      result: simulateDirect({ ...scenario, covert: { ...scenario.covert, stateBytes: v } }),
-    })),
-    [scenario],
-  )
 
   const memoryOverflow = result.fitMarginBytes < 0
   const dutyOverflow = sanitization && !Number.isFinite(result.gammaDuty)
@@ -553,380 +540,326 @@ export function GammaDashboard() {
           <ThemeToggle />
         </div>
 
-        {/* === Result Card === */}
-        <Card className="mb-6">
-          <CardContent className="pt-6">
-            {/* Header: Γ value + copy button */}
-            <div className="flex items-baseline gap-4 mb-5 h-14">
-              <span className="text-5xl font-bold font-mono tracking-tight leading-none">
-                {fmtGamma(result.gamma, true)}
-              </span>
-              {result.finite && <span className="text-sm text-muted-foreground">overhead</span>}
-              <div className="ml-auto" />
-              <button
-                onClick={handleCopyLink}
-                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                title="Copy shareable link"
-              >
-                {linkCopied ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-                ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                )}
-              </button>
-              <button
-                onClick={handleCopy}
-                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                title="Copy config + result as JSON"
-              >
-                {copied ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-                ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-                )}
-              </button>
-            </div>
-
-            {/* --- Layer 1: Operational overhead --- */}
-            <div className="mb-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Operational overhead</span>
-                <span className="flex items-center gap-3">
-                  <LegendDot color="bg-foreground/35" label="Non-bottleneck" />
-                  <LegendDot color="bg-foreground/80" label="Bottleneck" />
+        {/* === Result Card (sticky) === */}
+        <div className="sticky top-0 z-10 bg-background pb-4">
+          <Card>
+            <CardContent className="pt-6">
+              {/* Header: Γ value + copy button */}
+              <div className="flex items-baseline gap-4 mb-5 h-14">
+                <span className="text-5xl font-bold font-mono tracking-tight leading-none">
+                  {fmtGamma(result.gamma, true)}
                 </span>
+                {result.finite && <span className="text-sm text-muted-foreground">overhead</span>}
+                <div className="ml-auto" />
+                <button
+                  onClick={handleCopyLink}
+                  className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  title="Copy shareable link"
+                >
+                  {linkCopied ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                  )}
+                </button>
+                <button
+                  onClick={handleCopy}
+                  className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  title="Copy config + result as JSON"
+                >
+                  {copied ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                  )}
+                </button>
               </div>
-              <div className="space-y-1.5">
-                <OpBar label="Compute" value={result.gammaCompute} max={opMax} isBottleneck={opBottleneck === "compute"} disabled={memoryOverflow || dutyOverflow} />
-                <OpBar label="Ingress" value={result.gammaIngress} max={opMax} isBottleneck={opBottleneck === "ingress"} disabled={memoryOverflow || dutyOverflow} />
-                <OpBar label="Egress" value={result.gammaEgress} max={opMax} isBottleneck={opBottleneck === "egress"} disabled={memoryOverflow || dutyOverflow} />
-              </div>
-            </div>
 
-            {/* --- Layer 2: Memory fit --- */}
-            <div className="mb-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory utilization</span>
-                <span className="flex items-center gap-3">
-                  <LegendDot color="bg-red-400" label="Covert state" />
-                  <LegendDot color="bg-blue-300" label="Honest state" />
-                </span>
-              </div>
-              <MemoryFitBar
-                result={result}
-                totalHbm={hbmBytes}
-                honestMem={scenario.honest.claimedMemoryBytes}
-                covertState={covert.stateBytes}
-                disabled={dutyOverflow}
-              />
-            </div>
-
-            {/* --- Layer 3: Sanitization epoch --- */}
-            {sanitization && (
-              <div className="mb-4">
+              {/* --- Layer 1: Operational overhead --- */}
+              <div className="mb-5">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sanitization epoch</span>
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Operational overhead</span>
                   <span className="flex items-center gap-3">
-                    <LegendDot color="bg-emerald-400" label="Sanitization" />
-                    <LegendDot color="bg-pink-300" label="Covert download" />
-                    <LegendDot color="bg-red-400" label="Covert work" />
+                    <LegendDot color="bg-foreground/35" label="Non-bottleneck" />
+                    <LegendDot color="bg-foreground/80" label="Bottleneck" />
                   </span>
                 </div>
-                <EpochTimeline result={result} epochS={epochS} downtimeS={downtimeS} disabled={memoryOverflow} overflows={!!dutyOverflow} />
+                <div className="space-y-1.5">
+                  <OpBar label="Compute" value={result.gammaCompute} max={opMax} isBottleneck={opBottleneck === "compute"} disabled={memoryOverflow || dutyOverflow} />
+                  <OpBar label="Ingress" value={result.gammaIngress} max={opMax} isBottleneck={opBottleneck === "ingress"} disabled={memoryOverflow || dutyOverflow} />
+                  <OpBar label="Egress" value={result.gammaEgress} max={opMax} isBottleneck={opBottleneck === "egress"} disabled={memoryOverflow || dutyOverflow} />
+                </div>
               </div>
-            )}
+
+              {/* --- Layer 2: Memory fit --- */}
+              <div className="mb-5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory utilization</span>
+                  <span className="flex items-center gap-3">
+                    <LegendDot color="bg-red-400" label="Covert state" />
+                    <LegendDot color="bg-blue-300" label="Honest state" />
+                  </span>
+                </div>
+                <MemoryFitBar
+                  result={result}
+                  totalHbm={hbmBytes}
+                  honestMem={scenario.honest.claimedMemoryBytes}
+                  covertState={covert.stateBytes}
+                  disabled={dutyOverflow}
+                />
+              </div>
+
+              {/* --- Layer 3: Sanitization epoch --- */}
+              {sanitization && (
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sanitization epoch</span>
+                    <span className="flex items-center gap-3">
+                      <LegendDot color="bg-emerald-400" label="Sanitization" />
+                      <LegendDot color="bg-pink-300" label="Covert download" />
+                      <LegendDot color="bg-red-400" label="Covert work" />
+                    </span>
+                  </div>
+                  <EpochTimeline result={result} epochS={epochS} downtimeS={downtimeS} disabled={memoryOverflow} overflows={!!dutyOverflow} />
+                </div>
+              )}
 
           </CardContent>
         </Card>
+        </div>
 
         {/* === Controls === */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {/* Hardware + Covert workload */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Prover controls */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">Configuration</CardTitle>
+              <CardTitle className="text-sm font-semibold">Prover controls</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Hardware section */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Hardware</span>
-                  <Select value="" onValueChange={snapHardware}>
-                    <SelectTrigger className="w-40 h-7 text-xs">
-                      <SelectValue placeholder="Load preset..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(HARDWARE_PRESETS).map(([k, v]) => (
-                        <SelectItem key={k} value={k}>{v.nGpu}× {v.gpuKey}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-3">
+            <CardContent>
+              <Tabs defaultValue="hardware">
+                <TabsList className="grid w-full grid-cols-3 mb-4">
+                  <TabsTrigger value="hardware" className="text-xs">Hardware</TabsTrigger>
+                  <TabsTrigger value="honest" className="text-xs">Honest</TabsTrigger>
+                  <TabsTrigger value="covert" className="text-xs">Covert</TabsTrigger>
+                </TabsList>
+
+                {/* Hardware configuration */}
+                <TabsContent value="hardware" className="space-y-3 mt-0 min-h-[320px]">
                   <LogSlider
-                    label="Compute (FLOP/s)"
+                    label="Compute capacity"
+                    tooltip="Total system compute in FLOP/s"
                     valueExp={computeFlopsExp}
                     onValueExpChange={setComputeFlopsExp}
                     min={12} max={18} step={0.05}
                     formatValue={fmt}
                   />
                   <LogSlider
-                    label="HBM (bytes)"
+                    label="Memory capacity"
+                    tooltip="Total HBM across all GPUs"
                     valueExp={hbmBytesExp}
                     onValueExpChange={setHbmBytesExp}
                     min={9} max={14} step={0.05}
                     formatValue={fmtBytes}
                   />
-                </div>
-              </div>
+                  <div className="pt-2 border-t">
+                    <Label className="text-xs text-muted-foreground mb-2 block">Load from preset</Label>
+                    <div className="flex items-center gap-2">
+                      <Select value={gpuKey} onValueChange={setGpuKey}>
+                        <SelectTrigger className="flex-1 h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {GPU_KEYS.map((k) => (
+                            <SelectItem key={k} value={k}>{k}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <span className="text-xs text-muted-foreground">&times;</span>
+                      <Select value={String(gpuCount)} onValueChange={(v) => setGpuCount(Number(v))}>
+                        <SelectTrigger className="w-20 h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {GPU_COUNTS.map((n) => (
+                            <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <button
+                        onClick={() => snapHardware(gpuKey, gpuCount)}
+                        className="h-7 px-3 text-xs rounded-md bg-muted hover:bg-muted-foreground/20 text-foreground transition-colors"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+                </TabsContent>
 
-              {/* Covert workload section */}
-              <div className="pt-3 border-t">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Covert workload</span>
-                  <Select value="" onValueChange={snapCovert}>
-                    <SelectTrigger className="w-48 h-7 text-xs">
-                      <SelectValue placeholder="Load preset..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(COVERT_PRESETS).map(([k, v]) => (
-                        <SelectItem key={k} value={k}>
-                          {v.kind === "inference" ? v.modelKey : `Train ${v.modelKey}`}
-                          {v.syncPolicy && v.syncPolicy.mode !== "none" ? ` (${v.syncPolicy.mode})` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-3">
+                {/* Honest workload */}
+                <TabsContent value="honest" className="space-y-3 mt-0 min-h-[320px]">
+                  <LinearSlider
+                    label="Honest compute utilization"
+                    tooltip="Fraction of compute the prover claims the honest workload uses. Matmul transparency sets a verified floor on this value."
+                    value={computeFrac}
+                    onValueChange={setComputeFrac}
+                    min={0} max={100} step={1}
+                    formatValue={(v) => `${v}%`}
+                    clampMin={alpha}
+                  />
+                  <LinearSlider
+                    label="Honest memory utilization"
+                    tooltip="Fraction of HBM the prover claims the honest workload occupies"
+                    value={memoryFrac}
+                    onValueChange={setMemoryFrac}
+                    min={0} max={100} step={1}
+                    formatValue={(v) => `${v}%`}
+                  />
+                </TabsContent>
+
+                {/* Covert workload */}
+                <TabsContent value="covert" className="space-y-3 mt-0 min-h-[320px]">
                   <LogSlider
-                    label="Covert state n (bytes)"
+                    label="Covert state size"
+                    tooltip="Bytes of covert state that must reside in HBM. For inference, this is model weights (e.g. 140 GB for Llama 70B in FP16). For training, weights + optimizer state (~1.3 TB for Llama 70B)."
                     valueExp={nBytesExp}
                     onValueExpChange={setNBytesExp}
                     min={6} max={13} step={0.05}
                     formatValue={fmtBytes}
                   />
                   <LogSlider
-                    label="FLOP per unit (g)"
+                    label="Compute per output"
+                    tooltip="FLOP per unit of covert output. For inference, a 'unit' is one output token (e.g. ~140 GFLOP for Llama 70B). For training, a 'unit' is one training token (e.g. ~420 GFLOP for Llama 70B)."
                     valueExp={gFlopExp}
                     onValueExpChange={setGFlopExp}
                     min={6} max={15} step={0.05}
                     formatValue={fmt}
                   />
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setDInEnabled(!dInEnabled)}
-                      className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${dInEnabled ? "bg-primary" : "bg-muted"}`}
-                    >
-                      <span className={`pointer-events-none block h-3 w-3 rounded-full bg-background shadow-lg transition-transform ${dInEnabled ? "translate-x-3" : "translate-x-0"}`} />
-                    </button>
-                    <div className="flex-1">
-                      <LogSlider
-                        label="Ingress per unit d_in (bytes)"
-                        valueExp={dInExp}
-                        onValueExpChange={setDInExp}
-                        min={0} max={6} step={0.05}
-                        formatValue={(v) => dInEnabled ? fmtBytes(v) : "0"}
-                      />
-                    </div>
+                  <LogSlider
+                    label="Ingress per input"
+                    tooltip="Covert bytes received per unit. For inference, ~4 B/token (prompt bytes amortized). For training without external data, set to 0."
+                    valueExp={dInExp}
+                    onValueExpChange={setDInExp}
+                    min={-1} max={6} step={0.05}
+                    formatValue={(v) => v <= 10 ** DIO_OFF ? "0" : fmtBytes(v)}
+                  />
+                  <LogSlider
+                    label="Egress per output"
+                    tooltip="Covert bytes sent per unit. For inference, ~4 B/token. For training with periodic 140 GB checkpoints every 1B tokens, ~140 B/token. Set to 0 if no sync needed."
+                    valueExp={dOutExp}
+                    onValueExpChange={setDOutExp}
+                    min={-1} max={6} step={0.05}
+                    formatValue={(v) => v <= 10 ** DIO_OFF ? "0" : fmtBytes(v)}
+                  />
+                  <div className="pt-2 border-t">
+                    <Label className="text-xs text-muted-foreground mb-2 block">Load from preset</Label>
+                    <Select value="" onValueChange={snapCovert}>
+                      <SelectTrigger className="w-full h-7 text-xs">
+                        <SelectValue placeholder="Select workload..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(COVERT_PRESETS).map(([k, v]) => (
+                          <SelectItem key={k} value={k}>
+                            {v.kind === "inference" ? v.modelKey : `Train ${v.modelKey}`}
+                            {v.syncPolicy && v.syncPolicy.mode !== "none" ? ` (${v.syncPolicy.mode})` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setDOutEnabled(!dOutEnabled)}
-                      className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${dOutEnabled ? "bg-primary" : "bg-muted"}`}
-                    >
-                      <span className={`pointer-events-none block h-3 w-3 rounded-full bg-background shadow-lg transition-transform ${dOutEnabled ? "translate-x-3" : "translate-x-0"}`} />
-                    </button>
-                    <div className="flex-1">
-                      <LogSlider
-                        label="Egress per unit d_out (bytes)"
-                        valueExp={dOutExp}
-                        onValueExpChange={setDOutExp}
-                        min={0} max={6} step={0.05}
-                        formatValue={(v) => dOutEnabled ? fmtBytes(v) : "0"}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Honest load */}
-              <div className="pt-3 border-t">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Honest load</span>
-                <div className="space-y-3 mt-2">
-                  <div>
-                    <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Compute utilization (f*/Ĝ)</Label>
-                      <span className="text-xs font-mono">{computeFrac}%</span>
-                    </div>
-                    <Slider
-                      value={[computeFrac]}
-                      onValueChange={([v]) => setComputeFrac(v)}
-                      min={0} max={100} step={1}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Memory utilization (m*/M̂)</Label>
-                      <span className="text-xs font-mono">{memoryFrac}%</span>
-                    </div>
-                    <Slider
-                      value={[memoryFrac]}
-                      onValueChange={([v]) => setMemoryFrac(v)}
-                      min={0} max={100} step={1}
-                      className="mt-1"
-                    />
-                  </div>
-                </div>
-                <div className="text-xs text-muted-foreground pt-1">
-                  {"Proven compute: α \u00D7 f*/\u011C = "}{((alpha / 100) * computeFrac).toFixed(1)}{"% of \u011C"}
-                </div>
-              </div>
+                </TabsContent>
+              </Tabs>
             </CardContent>
           </Card>
 
-          {/* Verification */}
+          {/* Verifier controls */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">Verification Parameters</CardTitle>
+              <CardTitle className="text-sm font-semibold">Verifier controls</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Covert egress (b_out)</Label>
-                  <span className="text-xs font-mono">{fmtBw(10 ** bOutExp)}</span>
-                </div>
-                <Slider
-                  value={[bOutExp]}
-                  onValueChange={([v]) => setBOutExp(v)}
-                  min={1} max={10} step={0.1}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Covert ingress (b_in)</Label>
-                  <span className="text-xs font-mono">{fmtBw(10 ** bInExp)}</span>
-                </div>
-                <Slider
-                  value={[bInExp]}
-                  onValueChange={([v]) => setBInExp(v)}
-                  min={1} max={10} step={0.1}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Matmul transparency (α)</Label>
-                  <span className="text-xs font-mono">{alpha}%</span>
-                </div>
-                <Slider
-                  value={[alpha]}
-                  onValueChange={([v]) => setAlpha(v)}
-                  min={0} max={100} step={1}
-                  className="mt-1"
-                />
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setSanitization(!sanitization)}
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${sanitization ? "bg-primary" : "bg-muted"}`}
-                >
-                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${sanitization ? "translate-x-4" : "translate-x-0"}`} />
-                </button>
-                <Label className="text-xs text-muted-foreground">Memory sanitization</Label>
-              </div>
-              {sanitization && (
-                <>
-                  <div>
-                    <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Epoch length (τ)</Label>
-                      <span className="text-xs font-mono">{fmtTime(epochS)}</span>
-                    </div>
-                    <Slider
-                      value={[epochSExp]}
-                      onValueChange={([v]) => setEpochSExp(v)}
-                      min={-1} max={6} step={0.05}
-                      className="mt-1"
-                    />
+            <CardContent>
+              <Tabs defaultValue="matmul">
+                <TabsList className="grid w-full grid-cols-3 mb-4">
+                  <TabsTrigger value="matmul" className="text-xs">Matmul</TabsTrigger>
+                  <TabsTrigger value="network" className="text-xs">Network</TabsTrigger>
+                  <TabsTrigger value="memory" className="text-xs">Memory</TabsTrigger>
+                </TabsList>
+
+                {/* Matmul transparency */}
+                <TabsContent value="matmul" className="space-y-3 mt-0 min-h-[240px]">
+                  <LinearSlider
+                    label="Proved compute fraction"
+                    tooltip="Fraction of claimed compute that matmul transparency proves was actually performed"
+                    value={alpha}
+                    onValueChange={setAlpha}
+                    min={0} max={100} step={1}
+                    formatValue={(v) => `${v}%`}
+                  />
+                </TabsContent>
+
+                {/* Network transparency */}
+                <TabsContent value="network" className="space-y-3 mt-0 min-h-[240px]">
+                  <LogSlider
+                    label="Covert egress bandwidth"
+                    tooltip="Maximum covert data the prover can send out per second"
+                    valueExp={bOutExp}
+                    onValueExpChange={setBOutExp}
+                    min={1} max={10} step={0.1}
+                    formatValue={fmtBw}
+                  />
+                  <LogSlider
+                    label="Covert ingress bandwidth"
+                    tooltip="Maximum covert data the prover can receive per second"
+                    valueExp={bInExp}
+                    onValueExpChange={setBInExp}
+                    min={1} max={10} step={0.1}
+                    formatValue={fmtBw}
+                  />
+                </TabsContent>
+
+                {/* Memory transparency */}
+                <TabsContent value="memory" className="space-y-3 mt-0 min-h-[240px]">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setSanitization(!sanitization)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${sanitization ? "bg-primary" : "bg-muted"}`}
+                    >
+                      <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${sanitization ? "translate-x-4" : "translate-x-0"}`} />
+                    </button>
+                    <Label className="text-xs text-muted-foreground">Enable sanitization</Label>
                   </div>
-                  <div>
-                    <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Downtime per epoch (T)</Label>
-                      <span className="text-xs font-mono">{fmtTime(downtimeS)}</span>
-                    </div>
-                    <Slider
-                      value={[downtimeSExp]}
-                      onValueChange={([v]) => setDowntimeSExp(v)}
-                      min={-2} max={3.76} step={0.05}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Covert persistence capacity (C)</Label>
-                      <span className="text-xs font-mono">{survivingGB} GB</span>
-                    </div>
-                    <Slider
-                      value={[survivingGB]}
-                      onValueChange={([v]) => setSurvivingGB(v)}
-                      min={0} max={200} step={1}
-                      className="mt-1"
-                    />
-                  </div>
-                </>
-              )}
+                  {sanitization && (
+                    <>
+                      <LogSlider
+                        label="Epoch length"
+                        tooltip="Time between sanitization events"
+                        valueExp={epochSExp}
+                        onValueExpChange={setEpochSExp}
+                        min={-1} max={6} step={0.05}
+                        formatValue={(v) => fmtTime(v)}
+                      />
+                      <LogSlider
+                        label="Downtime per epoch"
+                        tooltip="Duration of each sanitization event"
+                        valueExp={downtimeSExp}
+                        onValueExpChange={setDowntimeSExp}
+                        min={-2} max={2} step={0.05}
+                        formatValue={(v) => fmtTime(v)}
+                      />
+                      <LinearSlider
+                        label="Covert persistence capacity"
+                        tooltip="Covert bytes that persist through a sanitization boundary"
+                        value={survivingGB}
+                        onValueChange={setSurvivingGB}
+                        min={0} max={200} step={1}
+                        formatValue={(v) => `${v} GB`}
+                      />
+                    </>
+                  )}
+                </TabsContent>
+              </Tabs>
             </CardContent>
           </Card>
         </div>
-
-        {/* === Sweeps === */}
-        <Tabs defaultValue="egress">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="egress">Egress Sweep</TabsTrigger>
-            <TabsTrigger value="compute">Compute Sweep</TabsTrigger>
-            <TabsTrigger value="state">Covert State Sweep</TabsTrigger>
-          </TabsList>
-          <TabsContent value="egress" className="mt-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold">Γ vs Covert Egress Bandwidth</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SweepChart points={bOutSweep} paramLabel="b_out" />
-              </CardContent>
-            </Card>
-          </TabsContent>
-          <TabsContent value="compute" className="mt-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold">Γ vs Honest Compute (f*/Ĝ, with α=1)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SweepChart
-                  points={computeSweep}
-                  paramLabel="f*/Ĝ"
-                  xFormatter={(v) => `${(v * 100).toFixed(0)}%`}
-                />
-              </CardContent>
-            </Card>
-          </TabsContent>
-          <TabsContent value="state" className="mt-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold">Γ vs Covert State (n)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SweepChart
-                  points={nSweep}
-                  paramLabel="Covert state (n)"
-                  xFormatter={fmtBytes}
-                />
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
       </div>
     </div>
   )

@@ -721,12 +721,9 @@ export function maximizeClusterThroughput(
       batchMax = 2 ** 16;
     }
 
-    // Batch candidates: powers of 2 up to cap
-    const maxPow = Math.floor(Math.log2(Math.max(1, Math.min(batchMax, 2 ** 18))));
-    const batchCandidates: number[] = [];
-    for (let k = 0; k <= maxPow; k++) {
-      batchCandidates.push(2 ** k);
-    }
+    // Batch candidates: logspace for finer resolution (matches paper's approach)
+    const maxPow = Math.log2(Math.max(1, Math.min(batchMax, 2 ** 18)));
+    const batchCandidates = logspace(0, maxPow, 100, 2);
 
     for (const batch of batchCandidates) {
       const [latS, info] = tokenLatencyWithGammaBreakdown(

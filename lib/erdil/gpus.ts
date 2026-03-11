@@ -369,10 +369,28 @@ export const Groq_LPU = new GPU({
   collectiveTimeSeconds: tpuCollectiveTimeSeconds,
 });
 
+export const B200 = new GPU({
+  name: "B200",
+  flopPerSecond: { 4: 18e15, 8: 9e15, 16: 4.5e15 },
+  hbmBandwidthBps: 8e12,
+  hbmSizeBytes: 192e9,
+  l2CacheSizeBytes: 5e7,
+  l2BandwidthBps: 2e13,
+  intranodeAllreduceBandwidthBps: 1.8e12 / 4,
+  internodeAllreduceBandwidthBps: 5e10 / 2,
+  nodeSize: 72,
+  priceDollarsPerHour: 2 * ((3.15 * 2) / 3),
+  kernelLaunchLatencySeconds: 4e-6,
+  collectiveTimeSeconds: meanCollectiveTimeNcclSeconds,
+  arithmeticUtilizationCap: 0.7,
+  memoryBwdUtilizationCap: 0.75,
+});
+
 /** Lookup map for UI selectors. */
 export const GPU_MAP: Record<string, GPU> = {
   H100,
   H200,
   A100,
   H20,
+  B200,
 };

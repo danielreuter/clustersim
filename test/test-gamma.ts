@@ -74,8 +74,8 @@ console.log("\n=== Llama 70B on 8×H100 (no sanitization) ===")
   console.log(`  regime: ${r.v2?.regime}, optBatch: ${r.v2?.optimalBatchSize}`)
   assert("70B: has v2 metadata", r.v2 ? 1 : 0, 1)
   assert("70B: finite", r.finite ? 1 : 0, 1)
-  // With 50% honest compute and α=1, gammaCompute should be ~2×
-  assert("70B: gammaCompute ≈ 2", r.gammaCompute, 2, 0.3)
+  // With 50% honest compute + 50% honest memory (halves bandwidth too), ~3.5×
+  assert("70B: gammaCompute ≈ 3.5", r.gammaCompute, 3.5, 0.3)
 }
 
 // ===================================================================

@@ -16,6 +16,7 @@ export const HARDWARE: Record<string, Hardware> = {
   "32xH200": { name: "32× H200 (4 nodes)", gpuKey: "H200", nGpu: 32 },
   "8xA100": { name: "8× A100", gpuKey: "A100", nGpu: 8 },
   "8xH20": { name: "8× H20", gpuKey: "H20", nGpu: 8 },
+  "72xB200": { name: "GB200 NVL72", gpuKey: "B200", nGpu: 72 },
 }
 
 // ---------------------------------------------------------------------------

@@ -223,17 +223,21 @@ function simulateWithRoofline(
   // Roofline function
   const roofline = isInference ? rooflineLite : rooflineLiteTraining
 
+  // Total rack HBM bandwidth
+  const totalHbmBw = rh.nGpu * rh.gpu.hbmBandwidthBps
+
   // Full-budget roofline (dedicated throughput)
   const fullBudget = isInference
-    ? rooflineLite(model, rh.gpu, rh.nGpu, ctx, rh.computeFlops, rh.hbmBytes)
-    : rooflineLiteTraining(model, rh.gpu, rh.nGpu, rh.computeFlops, rh.hbmBytes)
+    ? rooflineLite(model, rh.gpu, rh.nGpu, ctx, rh.computeFlops, rh.hbmBytes, totalHbmBw)
+    : rooflineLiteTraining(model, rh.gpu, rh.nGpu, rh.computeFlops, rh.hbmBytes, totalHbmBw)
 
   // Verified-budget roofline (after α*f* consumed)
   const availFlops = Math.max(0, rh.computeFlops - verifier.alpha * honest.claimedComputeFlops)
   const availHbm = Math.max(0, rh.hbmBytes - honest.claimedMemoryBytes)
+  const availHbmBw = Math.max(0, totalHbmBw * (1 - honest.claimedMemoryBytes / rh.hbmBytes))
   const verifiedBudget = isInference
-    ? rooflineLite(model, rh.gpu, rh.nGpu, ctx, availFlops, availHbm)
-    : rooflineLiteTraining(model, rh.gpu, rh.nGpu, availFlops, availHbm)
+    ? rooflineLite(model, rh.gpu, rh.nGpu, ctx, availFlops, availHbm, availHbmBw)
+    : rooflineLiteTraining(model, rh.gpu, rh.nGpu, availFlops, availHbm, availHbmBw)
 
   // Derive I/O requirements
   let dIn = 0

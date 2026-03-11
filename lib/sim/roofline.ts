@@ -22,10 +22,12 @@ export function rooflineLite(
   ctx: number,
   availFlops: number,
   availHbmBytes: number,
+  availHbmBandwidth?: number,
 ): RooflineResult {
   const nPersist = model.totalParams * model.weightPrecisionBytes
   const perGpuFlops = availFlops / nGpu
   const perGpuHbm = availHbmBytes / nGpu
+  const hbmBw = availHbmBandwidth ?? (nGpu * gpu.hbmBandwidthBps)
 
   let bestThroughput = 0
   let bestBatch = 0
@@ -42,7 +44,7 @@ export function rooflineLite(
     const flop = model.arithmeticCostFlop(ctx, batch, 1)
     const tCompute = flop / (nGpu * perGpuFlops)
     const memBytes = model.memoryReadsWritesBytes(ctx, batch, 1, nGpu)
-    const tMem = memBytes / (nGpu * gpu.hbmBandwidthBps)
+    const tMem = memBytes / hbmBw
     const latency = Math.max(tCompute, tMem)
     const throughput = batch / latency
 
@@ -81,12 +83,14 @@ export function rooflineLiteTraining(
   nGpu: number,
   availFlops: number,
   availHbmBytes: number,
+  availHbmBandwidth?: number,
 ): RooflineResult {
   const weightBytes = model.totalParams * model.weightPrecisionBytes
   const optimizerBytes = model.totalParams * 12 // Adam state in FP32
   const nPersist = weightBytes + optimizerBytes
   const perGpuFlops = availFlops / nGpu
   const perGpuHbm = availHbmBytes / nGpu
+  const hbmBw = availHbmBandwidth ?? (nGpu * gpu.hbmBandwidthBps)
 
   let bestThroughput = 0
   let bestBatch = 0
@@ -108,7 +112,7 @@ export function rooflineLiteTraining(
     const flop = 3 * model.arithmeticCostFlop(1, batch, 1)
     const tCompute = flop / (nGpu * perGpuFlops)
     const memBytes = 3 * model.memoryReadsWritesBytes(1, batch, 1, nGpu)
-    const tMem = memBytes / (nGpu * gpu.hbmBandwidthBps)
+    const tMem = memBytes / hbmBw
     const latency = Math.max(tCompute, tMem)
     const throughput = batch / latency
 

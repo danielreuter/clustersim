@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect, useCallback } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
@@ -273,34 +273,76 @@ function useContextSweep(scenario: Scenario) {
 
 const GPU_COUNTS = [1, 2, 4, 8, 16, 32, 64, 72]
 
+// ---------------------------------------------------------------------------
+// URL hash state serialization
+// ---------------------------------------------------------------------------
+
+type DashboardState = {
+  hw: string; hc: boolean; gk: string; ng: number
+  cf: number; mf: number; a: number
+  bo: number; bi: number; sn: boolean; ep: number; dt: number; sg: number
+  wl: string; wc: boolean; mk: string; cx: number; wk: "inference" | "training"
+  sm: "none" | "checkpoint" | "periodic-updates"
+}
+
+function encodeState(s: DashboardState): string {
+  try {
+    return btoa(JSON.stringify(s))
+  } catch { return "" }
+}
+
+function decodeState(hash: string): DashboardState | null {
+  try {
+    const raw = hash.startsWith("#") ? hash.slice(1) : hash
+    if (!raw) return null
+    return JSON.parse(atob(raw)) as DashboardState
+  } catch { return null }
+}
+
 export function GammaDashboard() {
+  // Read initial state from URL hash
+  const initial = typeof window !== "undefined" ? decodeState(window.location.hash) : null
+
   // Hardware state
-  const [hwKey, setHwKey] = useState(Object.keys(HARDWARE)[0])
-  const [hwCustom, setHwCustom] = useState(false)
-  const [gpuKey, setGpuKey] = useState("H100")
-  const [nGpu, setNGpu] = useState(8)
+  const [hwKey, setHwKey] = useState(initial?.hw ?? Object.keys(HARDWARE)[0])
+  const [hwCustom, setHwCustom] = useState(initial?.hc ?? false)
+  const [gpuKey, setGpuKey] = useState(initial?.gk ?? "H100")
+  const [nGpu, setNGpu] = useState(initial?.ng ?? 8)
 
   // Honest load
-  const [computeFrac, setComputeFrac] = useState(50)
-  const [memoryFrac, setMemoryFrac] = useState(50)
-  const [alpha, setAlpha] = useState(100)
+  const [computeFrac, setComputeFrac] = useState(initial?.cf ?? 50)
+  const [memoryFrac, setMemoryFrac] = useState(initial?.mf ?? 50)
+  const [alpha, setAlpha] = useState(initial?.a ?? 100)
 
   // Verifier
-  const [bOutExp, setBOutExp] = useState(Math.log10(20e3))
-  const [bInExp, setBInExp] = useState(Math.log10(100e3))
-  const [sanitization, setSanitization] = useState(true)
-  const [epochSExp, setEpochSExp] = useState(Math.log10(5))
+  const [bOutExp, setBOutExp] = useState(initial?.bo ?? Math.log10(20e3))
+  const [bInExp, setBInExp] = useState(initial?.bi ?? Math.log10(100e3))
+  const [sanitization, setSanitization] = useState(initial?.sn ?? true)
+  const [epochSExp, setEpochSExp] = useState(initial?.ep ?? Math.log10(5))
   const epochS = 10 ** epochSExp
-  const [downtimeS, setDowntimeS] = useState(0.25)
-  const [survivingGB, setSurvivingGB] = useState(17)
+  const [downtimeS, setDowntimeS] = useState(initial?.dt ?? 0.25)
+  const [survivingGB, setSurvivingGB] = useState(initial?.sg ?? 17)
 
   // Workload state
-  const [wlKey, setWlKey] = useState(Object.keys(WORKLOADS_V2)[0])
-  const [wlCustom, setWlCustom] = useState(false)
-  const [modelKey, setModelKey] = useState("Llama 3 70B")
-  const [ctxExp, setCtxExp] = useState(11) // 2^11 = 2048
-  const [workloadKind, setWorkloadKind] = useState<"inference" | "training">("inference")
-  const [syncMode, setSyncMode] = useState<"none" | "checkpoint" | "periodic-updates">("none")
+  const [wlKey, setWlKey] = useState(initial?.wl ?? Object.keys(WORKLOADS_V2)[0])
+  const [wlCustom, setWlCustom] = useState(initial?.wc ?? false)
+  const [modelKey, setModelKey] = useState(initial?.mk ?? "Llama 3 70B")
+  const [ctxExp, setCtxExp] = useState(initial?.cx ?? 11) // 2^11 = 2048
+  const [workloadKind, setWorkloadKind] = useState<"inference" | "training">(initial?.wk ?? "inference")
+  const [syncMode, setSyncMode] = useState<"none" | "checkpoint" | "periodic-updates">(initial?.sm ?? "none")
+
+  // Write state to URL hash on change
+  const dashState: DashboardState = useMemo(() => ({
+    hw: hwKey, hc: hwCustom, gk: gpuKey, ng: nGpu,
+    cf: computeFrac, mf: memoryFrac, a: alpha,
+    bo: bOutExp, bi: bInExp, sn: sanitization, ep: epochSExp, dt: downtimeS, sg: survivingGB,
+    wl: wlKey, wc: wlCustom, mk: modelKey, cx: ctxExp, wk: workloadKind, sm: syncMode,
+  }), [hwKey, hwCustom, gpuKey, nGpu, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochSExp, downtimeS, survivingGB, wlKey, wlCustom, modelKey, ctxExp, workloadKind, syncMode])
+
+  useEffect(() => {
+    const encoded = encodeState(dashState)
+    if (encoded) window.history.replaceState(null, "", `#${encoded}`)
+  }, [dashState])
 
   const contextLength = Math.round(2 ** ctxExp)
 
@@ -372,6 +414,12 @@ export function GammaDashboard() {
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
+  const [linkCopied, setLinkCopied] = useState(false)
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(window.location.href)
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 2000)
+  }
 
   // Sweep: b_out
   const bOutSweep = useMemo(
@@ -431,6 +479,17 @@ export function GammaDashboard() {
                 </span>
               )}
               <div className="ml-auto" />
+              <button
+                onClick={handleCopyLink}
+                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title="Copy shareable link"
+              >
+                {linkCopied ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                )}
+              </button>
               <button
                 onClick={handleCopy}
                 className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"

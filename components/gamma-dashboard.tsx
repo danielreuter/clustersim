@@ -152,9 +152,15 @@ function EpochTimeline({ result, epochS, downtimeS, disabled, overflows }: { res
     <div className="flex items-center gap-2 text-sm">
       <span className="w-20 text-right text-muted-foreground shrink-0">Time</span>
       <div className="relative flex-1 h-5 bg-muted rounded overflow-hidden flex">
-        <div className="h-full bg-emerald-400 transition-all" style={{ width: `${sanitizeFrac * 100}%` }} />
-        <div className="h-full bg-pink-300 transition-all" style={{ width: `${downloadFrac * 100}%` }} />
-        <div className="h-full bg-red-400 transition-all" style={{ width: `${operationalFrac * 100}%` }} />
+        <div className="h-full bg-emerald-400 transition-all flex items-center justify-center overflow-hidden" style={{ width: `${sanitizeFrac * 100}%` }}>
+          {sanitizeFrac >= 0.15 && <span className="text-[10px] font-mono text-white truncate px-1 drop-shadow-sm">{fmtTime(tSanitize)}</span>}
+        </div>
+        <div className="h-full bg-pink-300 transition-all flex items-center justify-center overflow-hidden" style={{ width: `${downloadFrac * 100}%` }}>
+          {downloadFrac >= 0.15 && <span className="text-[10px] font-mono text-white truncate px-1 drop-shadow-sm">{fmtTime(tReload)}</span>}
+        </div>
+        <div className="h-full bg-red-400 transition-all flex items-center justify-center overflow-hidden" style={{ width: `${operationalFrac * 100}%` }}>
+          {operationalFrac >= 0.15 && <span className="text-[10px] font-mono text-white truncate px-1 drop-shadow-sm">{fmtTime(tCovert)}</span>}
+        </div>
         {overflows && <OverflowStripes />}
       </div>
       <span className="w-16 text-right font-mono shrink-0">{fmtGamma(result.gammaDuty)}</span>
@@ -187,15 +193,19 @@ function MemoryFitBar({ result, totalHbm, honestMem, covertState, disabled }: { 
       <div className="relative flex-1 h-5 bg-muted rounded overflow-hidden">
         <div className="h-full flex">
           <div
-            className="h-full bg-red-400 transition-all"
+            className="h-full bg-red-400 transition-all flex items-center justify-center overflow-hidden"
             style={{ width: `${covertFrac * 100}%` }}
             title={`Covert: ${fmtBytes(covertState)}`}
-          />
+          >
+            {covertFrac >= 0.15 && <span className="text-[10px] font-mono text-white truncate px-1 drop-shadow-sm">{fmtBytes(covertState)}</span>}
+          </div>
           <div
-            className="h-full bg-blue-300 transition-all"
+            className="h-full bg-blue-300 transition-all flex items-center justify-center overflow-hidden"
             style={{ width: `${honestFrac * 100}%` }}
             title={`Honest: ${fmtBytes(honestMem)}`}
-          />
+          >
+            {honestFrac >= 0.15 && <span className="text-[10px] font-mono text-white truncate px-1 drop-shadow-sm">{fmtBytes(honestMem)}</span>}
+          </div>
         </div>
         {overflows && <OverflowStripes />}
       </div>
@@ -626,25 +636,6 @@ export function GammaDashboard() {
               </div>
             )}
 
-            {/* Key numbers */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t text-sm">
-              <div>
-                <div className="text-muted-foreground">Dedicated θ₀</div>
-                <div className="font-mono">{fmt(result.theta0)} {covert.unit}/s</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Verified θ</div>
-                <div className="font-mono">{fmt(result.thetaVerified)} {covert.unit}/s</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Covert state</div>
-                <div className="font-mono">{fmtBytes(covert.stateBytes)}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">FLOP/unit</div>
-                <div className="font-mono">{fmt(covert.flopPerUnit)}</div>
-              </div>
-            </div>
           </CardContent>
         </Card>
 

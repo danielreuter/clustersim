@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect, useCallback } from "react"
+import { useState, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
@@ -13,22 +13,18 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  simulate,
+  simulateDirect,
+  sweepDirect,
   logRange,
-  resolveHardware,
-  HARDWARE,
-  WORKLOADS_V2,
-  MODEL_MAP,
-  GPU_MAP,
-  honestLoadFromFractions,
-  type Hardware,
-  type Scenario,
+  computeHardwarePreset,
+  computeCovertPreset,
+  HARDWARE_PRESETS,
+  COVERT_PRESETS,
+  VERIFIER_FULL,
+  type DirectScenario,
+  type CovertWorkloadV1,
   type GammaResult,
   type SweepPoint,
-  type CovertWorkloadInference,
-  type CovertWorkloadTraining,
-  type TrainingSyncPolicy,
-  type SimulationSnapshot,
 } from "@/lib/sim"
 
 // ---------------------------------------------------------------------------
@@ -72,21 +68,6 @@ function fmtTime(s: number): string {
   if (s >= 3600) return `${(s / 3600).toFixed(1)} hrs`
   if (s >= 60) return `${(s / 60).toFixed(1)} min`
   return `${s.toFixed(2)}s`
-}
-
-const REGIME_LABELS: Record<string, string> = {
-  compute: "Compute-bound",
-  "memory-bandwidth": "Memory BW-bound",
-  "under-batched": "Under-batched",
-  memory: "Memory-limited",
-  latency: "Latency-limited",
-  comm: "Comm-limited",
-}
-
-const REGIME_COLORS: Record<string, string> = {
-  compute: "bg-blue-100 text-blue-800",
-  "memory-bandwidth": "bg-amber-100 text-amber-800",
-  "under-batched": "bg-red-100 text-red-800",
 }
 
 // ---------------------------------------------------------------------------
@@ -248,73 +229,80 @@ function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; 
 }
 
 // ---------------------------------------------------------------------------
-// Context length sweep
+// Log-scale slider helper
 // ---------------------------------------------------------------------------
 
-function useContextSweep(scenario: Scenario) {
-  return useMemo(() => {
-    const wl = scenario.covert
-    if (!("backend" in wl) || wl.kind !== "inference") return []
-
-    const ctxValues = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
-    return ctxValues.map((ctx) => {
-      const modified: Scenario = {
-        ...scenario,
-        covert: { ...wl, contextLength: ctx } as CovertWorkloadInference,
-      }
-      return { value: ctx, result: simulate(modified) }
-    })
-  }, [scenario])
+function LogSlider({ label, valueExp, onValueExpChange, min, max, step, formatValue }: {
+  label: string
+  valueExp: number
+  onValueExpChange: (v: number) => void
+  min: number
+  max: number
+  step: number
+  formatValue: (v: number) => string
+}) {
+  return (
+    <div>
+      <div className="flex justify-between">
+        <Label className="text-xs text-muted-foreground">{label}</Label>
+        <span className="text-xs font-mono">{formatValue(10 ** valueExp)}</span>
+      </div>
+      <Slider
+        value={[valueExp]}
+        onValueChange={([v]) => onValueExpChange(v)}
+        min={min} max={max} step={step}
+        className="mt-1"
+      />
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
 // Main Dashboard
 // ---------------------------------------------------------------------------
 
-const GPU_COUNTS = [1, 2, 4, 8, 16, 32, 64, 72]
+// Default hardware: 8xH100
+const DEFAULT_HW = computeHardwarePreset("H100", 8)
+// Default covert: Llama 70B inference
+const DEFAULT_COVERT = computeCovertPreset(DEFAULT_HW, COVERT_PRESETS["inf-llama70b"])
 
 // ---------------------------------------------------------------------------
-// URL hash state serialization
+// URL hash state serialization (write on copy-link only, read on init)
 // ---------------------------------------------------------------------------
 
-type DashboardState = {
-  hw: string; hc: boolean; gk: string; ng: number
-  cf: number; mf: number; a: number
-  bo: number; bi: number; sn: boolean; ep: number; dt: number; sg: number
-  wl: string; wc: boolean; mk: string; cx: number; wk: "inference" | "training"
-  sm: "none" | "checkpoint" | "periodic-updates"
+type DashState = {
+  cfe: number; hbe: number  // hardware: computeFlopsExp, hbmBytesExp
+  cf: number; mf: number; a: number  // honest load
+  bo: number; bi: number; sn: boolean; ep: number; dt: number; sg: number  // verifier
+  ne: number; ge: number; die: number; dien: boolean; doe: number; doen: boolean  // covert
 }
 
-function encodeState(s: DashboardState): string {
-  try {
-    return btoa(JSON.stringify(s))
-  } catch { return "" }
+function encodeState(s: DashState): string {
+  try { return btoa(JSON.stringify(s)) } catch { return "" }
 }
 
-function decodeState(hash: string): DashboardState | null {
+function decodeState(hash: string): DashState | null {
   try {
     const raw = hash.startsWith("#") ? hash.slice(1) : hash
     if (!raw) return null
-    return JSON.parse(atob(raw)) as DashboardState
+    return JSON.parse(atob(raw)) as DashState
   } catch { return null }
 }
 
 export function GammaDashboard() {
-  // Read initial state from URL hash
+  // Read initial state from URL hash (once on mount)
   const initial = typeof window !== "undefined" ? decodeState(window.location.hash) : null
 
-  // Hardware state
-  const [hwKey, setHwKey] = useState(initial?.hw ?? Object.keys(HARDWARE)[0])
-  const [hwCustom, setHwCustom] = useState(initial?.hc ?? false)
-  const [gpuKey, setGpuKey] = useState(initial?.gk ?? "H100")
-  const [nGpu, setNGpu] = useState(initial?.ng ?? 8)
+  // Hardware: raw log-scale sliders
+  const [computeFlopsExp, setComputeFlopsExp] = useState(initial?.cfe ?? Math.log10(DEFAULT_HW.computeFlops))
+  const [hbmBytesExp, setHbmBytesExp] = useState(initial?.hbe ?? Math.log10(DEFAULT_HW.hbmBytes))
 
   // Honest load
   const [computeFrac, setComputeFrac] = useState(initial?.cf ?? 50)
   const [memoryFrac, setMemoryFrac] = useState(initial?.mf ?? 50)
-  const [alpha, setAlpha] = useState(initial?.a ?? 100)
 
   // Verifier
+  const [alpha, setAlpha] = useState(initial?.a ?? 100)
   const [bOutExp, setBOutExp] = useState(initial?.bo ?? Math.log10(20e3))
   const [bInExp, setBInExp] = useState(initial?.bi ?? Math.log10(100e3))
   const [sanitization, setSanitization] = useState(initial?.sn ?? true)
@@ -323,41 +311,65 @@ export function GammaDashboard() {
   const [downtimeS, setDowntimeS] = useState(initial?.dt ?? 0.25)
   const [survivingGB, setSurvivingGB] = useState(initial?.sg ?? 17)
 
-  // Workload state
-  const [wlKey, setWlKey] = useState(initial?.wl ?? Object.keys(WORKLOADS_V2)[0])
-  const [wlCustom, setWlCustom] = useState(initial?.wc ?? false)
-  const [modelKey, setModelKey] = useState(initial?.mk ?? "Llama 3 70B")
-  const [ctxExp, setCtxExp] = useState(initial?.cx ?? 11) // 2^11 = 2048
-  const [workloadKind, setWorkloadKind] = useState<"inference" | "training">(initial?.wk ?? "inference")
-  const [syncMode, setSyncMode] = useState<"none" | "checkpoint" | "periodic-updates">(initial?.sm ?? "none")
+  // Covert workload: raw log-scale sliders
+  const [nBytesExp, setNBytesExp] = useState(initial?.ne ?? Math.log10(DEFAULT_COVERT.stateBytes))
+  const [gFlopExp, setGFlopExp] = useState(initial?.ge ?? Math.log10(DEFAULT_COVERT.flopPerUnit))
+  const [dInExp, setDInExp] = useState(initial?.die ?? (DEFAULT_COVERT.ingressBytesPerUnit > 0 ? Math.log10(DEFAULT_COVERT.ingressBytesPerUnit) : 0))
+  const [dInEnabled, setDInEnabled] = useState(initial?.dien ?? DEFAULT_COVERT.ingressBytesPerUnit > 0)
+  const [dOutExp, setDOutExp] = useState(initial?.doe ?? (DEFAULT_COVERT.egressBytesPerUnit > 0 ? Math.log10(DEFAULT_COVERT.egressBytesPerUnit) : 0))
+  const [dOutEnabled, setDOutEnabled] = useState(initial?.doen ?? DEFAULT_COVERT.egressBytesPerUnit > 0)
 
-  // Write state to URL hash on change
-  const dashState: DashboardState = useMemo(() => ({
-    hw: hwKey, hc: hwCustom, gk: gpuKey, ng: nGpu,
-    cf: computeFrac, mf: memoryFrac, a: alpha,
-    bo: bOutExp, bi: bInExp, sn: sanitization, ep: epochSExp, dt: downtimeS, sg: survivingGB,
-    wl: wlKey, wc: wlCustom, mk: modelKey, cx: ctxExp, wk: workloadKind, sm: syncMode,
-  }), [hwKey, hwCustom, gpuKey, nGpu, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochSExp, downtimeS, survivingGB, wlKey, wlCustom, modelKey, ctxExp, workloadKind, syncMode])
+  const computeFlops = 10 ** computeFlopsExp
+  const hbmBytes = 10 ** hbmBytesExp
 
-  useEffect(() => {
-    const encoded = encodeState(dashState)
-    if (encoded) window.history.replaceState(null, "", `#${encoded}`)
-  }, [dashState])
+  // Snap hardware preset
+  const snapHardware = (key: string) => {
+    const p = HARDWARE_PRESETS[key]
+    if (!p) return
+    const hw = computeHardwarePreset(p.gpuKey, p.nGpu)
+    setComputeFlopsExp(Math.log10(hw.computeFlops))
+    setHbmBytesExp(Math.log10(hw.hbmBytes))
+  }
 
-  const contextLength = Math.round(2 ** ctxExp)
+  // Snap covert preset
+  const snapCovert = (key: string) => {
+    const config = COVERT_PRESETS[key]
+    if (!config) return
+    const hw = { computeFlops, hbmBytes }
+    const wl = computeCovertPreset(hw, config)
+    setNBytesExp(Math.log10(Math.max(1, wl.stateBytes)))
+    setGFlopExp(Math.log10(Math.max(1, wl.flopPerUnit)))
+    if (wl.ingressBytesPerUnit > 0) {
+      setDInExp(Math.log10(wl.ingressBytesPerUnit))
+      setDInEnabled(true)
+    } else {
+      setDInEnabled(false)
+    }
+    if (wl.egressBytesPerUnit > 0) {
+      setDOutExp(Math.log10(wl.egressBytesPerUnit))
+      setDOutEnabled(true)
+    } else {
+      setDOutEnabled(false)
+    }
+  }
 
-  // Derive hardware
-  const hw: Hardware = useMemo(() => {
-    if (hwCustom) return { name: `${nGpu}× ${gpuKey}`, gpuKey, nGpu }
-    return HARDWARE[hwKey]
-  }, [hwCustom, hwKey, gpuKey, nGpu])
+  const covert: CovertWorkloadV1 = useMemo(() => ({
+    label: "Custom",
+    kind: "inference",
+    unit: "unit",
+    stateBytes: 10 ** nBytesExp,
+    flopPerUnit: 10 ** gFlopExp,
+    ingressBytesPerUnit: dInEnabled ? 10 ** dInExp : 0,
+    egressBytesPerUnit: dOutEnabled ? 10 ** dOutExp : 0,
+  }), [nBytesExp, gFlopExp, dInExp, dInEnabled, dOutExp, dOutEnabled])
 
-  // Resolve hardware for display (use BF16 = 2 bytes as default precision for honest load fractions)
-  // The actual simulation resolves with the model's precision
-  const resolvedHw = useMemo(() => resolveHardware(hw, 2), [hw])
-
-  const scenario: Scenario = useMemo(() => {
-    const verifier = {
+  const scenario: DirectScenario = useMemo(() => ({
+    hardware: { computeFlops, hbmBytes },
+    honest: {
+      claimedComputeFlops: (computeFrac / 100) * computeFlops,
+      claimedMemoryBytes: (memoryFrac / 100) * hbmBytes,
+    },
+    verifier: {
       alpha: alpha / 100,
       covertIngressBps: 10 ** bInExp,
       covertEgressBps: 10 ** bOutExp,
@@ -365,57 +377,30 @@ export function GammaDashboard() {
       epochSeconds: epochS,
       downtimeSeconds: downtimeS,
       sanitizationEnabled: sanitization,
-    }
+    },
+    covert,
+  }), [computeFlops, hbmBytes, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochS, downtimeS, survivingGB, covert])
 
-    let covert: CovertWorkloadInference | CovertWorkloadTraining
-    if (!wlCustom) {
-      covert = WORKLOADS_V2[wlKey]
-    } else if (workloadKind === "inference") {
-      covert = {
-        label: `${modelKey} inference`,
-        kind: "inference",
-        unit: "token",
-        backend: "roofline-lite",
-        modelKey,
-        contextLength,
-      }
-    } else {
-      const syncPolicy: TrainingSyncPolicy =
-        syncMode === "none"
-          ? { mode: "none" }
-          : syncMode === "checkpoint"
-            ? { mode: "checkpoint", bytesOutPerSync: MODEL_MAP[modelKey].totalParams * 2, tokensPerSync: 1e6 }
-            : { mode: "periodic-updates", bytesInPerSync: MODEL_MAP[modelKey].totalParams * 2, bytesOutPerSync: MODEL_MAP[modelKey].totalParams * 2, tokensPerSync: 1e6 }
+  const result = useMemo(() => simulateDirect(scenario), [scenario])
 
-      covert = {
-        label: `Train ${modelKey}`,
-        kind: "training",
-        unit: "train-token",
-        backend: "roofline-lite",
-        modelKey,
-        syncPolicy,
-      }
-    }
-
-    return {
-      hardware: hw,
-      honest: honestLoadFromFractions(resolvedHw.computeFlops, resolvedHw.hbmBytes, computeFrac / 100, memoryFrac / 100),
-      verifier,
-      covert,
-    }
-  }, [hw, resolvedHw, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochSExp, downtimeS, survivingGB, wlKey, wlCustom, modelKey, contextLength, workloadKind, syncMode])
-
-  const result = useMemo(() => simulate(scenario), [scenario])
-
-  const snapshot: SimulationSnapshot = useMemo(() => ({ input: scenario, output: result }), [scenario, result])
   const [copied, setCopied] = useState(false)
   const handleCopy = () => {
-    navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2))
+    navigator.clipboard.writeText(JSON.stringify({ input: scenario, output: result }, null, 2))
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
+
+  // Copy link: encode current state into URL hash on click (not on every change)
   const [linkCopied, setLinkCopied] = useState(false)
   const handleCopyLink = () => {
+    const state: DashState = {
+      cfe: computeFlopsExp, hbe: hbmBytesExp,
+      cf: computeFrac, mf: memoryFrac, a: alpha,
+      bo: bOutExp, bi: bInExp, sn: sanitization, ep: epochSExp, dt: downtimeS, sg: survivingGB,
+      ne: nBytesExp, ge: gFlopExp, die: dInExp, dien: dInEnabled, doe: dOutExp, doen: dOutEnabled,
+    }
+    const encoded = encodeState(state)
+    if (encoded) window.history.replaceState(null, "", `#${encoded}`)
     navigator.clipboard.writeText(window.location.href)
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 2000)
@@ -425,26 +410,32 @@ export function GammaDashboard() {
   const bOutSweep = useMemo(
     () => logRange(1, 10, 60).map((v) => ({
       value: v,
-      result: simulate({ ...scenario, verifier: { ...scenario.verifier, covertEgressBps: v } }),
+      result: simulateDirect({ ...scenario, verifier: { ...scenario.verifier, covertEgressBps: v } }),
     })),
     [scenario],
   )
 
-  // Sweep: proven compute share (log-spaced from 1% to 99%)
+  // Sweep: proven compute share
   const computeSweep = useMemo(
     () => logRange(-2, Math.log10(0.99), 50).map((v) => ({
       value: v,
-      result: simulate({
+      result: simulateDirect({
         ...scenario,
-        honest: { ...scenario.honest, claimedComputeFlops: v * resolvedHw.computeFlops },
+        honest: { ...scenario.honest, claimedComputeFlops: v * computeFlops },
         verifier: { ...scenario.verifier, alpha: 1 },
       }),
     })),
-    [scenario, resolvedHw],
+    [scenario, computeFlops],
   )
 
-  // Context sweep (inference only)
-  const ctxSweep = useContextSweep(scenario)
+  // Sweep: covert state (n)
+  const nSweep = useMemo(
+    () => logRange(6, 13, 60).map((v) => ({
+      value: v,
+      result: simulateDirect({ ...scenario, covert: { ...scenario.covert, stateBytes: v } }),
+    })),
+    [scenario],
+  )
 
   const opMax = Math.max(result.gammaCompute, result.gammaIngress, result.gammaEgress, 10)
   const opBottleneck: "compute" | "ingress" | "egress" = result.gammaCompute >= result.gammaIngress && result.gammaCompute >= result.gammaEgress
@@ -473,11 +464,6 @@ export function GammaDashboard() {
                 {fmtGamma(result.gamma)}
               </span>
               <span className="text-sm text-muted-foreground">overhead</span>
-              {result.v2 && (
-                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${REGIME_COLORS[result.v2.regime] ?? "bg-gray-100 text-gray-800"}`}>
-                  {REGIME_LABELS[result.v2.regime] ?? result.v2.regime}
-                </span>
-              )}
               <div className="ml-auto" />
               <button
                 onClick={handleCopyLink}
@@ -534,9 +520,9 @@ export function GammaDashboard() {
               </div>
               <MemoryFitBar
                 result={result}
-                totalHbm={resolvedHw.hbmBytes}
+                totalHbm={hbmBytes}
                 honestMem={scenario.honest.claimedMemoryBytes}
-                covertState={result.v2 ? result.v2.nPersistBytes + result.v2.workspaceBytes : 0}
+                covertState={covert.stateBytes}
               />
             </div>
 
@@ -559,200 +545,167 @@ export function GammaDashboard() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t text-sm">
               <div>
                 <div className="text-muted-foreground">Dedicated θ₀</div>
-                <div className="font-mono">{fmt(result.theta0)} {scenario.covert.unit}/s</div>
+                <div className="font-mono">{fmt(result.theta0)} {covert.unit}/s</div>
               </div>
               <div>
                 <div className="text-muted-foreground">Verified θ</div>
-                <div className="font-mono">{fmt(result.thetaVerified)} {scenario.covert.unit}/s</div>
+                <div className="font-mono">{fmt(result.thetaVerified)} {covert.unit}/s</div>
               </div>
-              {result.v2 && (
-                <>
-                  <div>
-                    <div className="text-muted-foreground">Batch size</div>
-                    <div className="font-mono">{result.v2.optimalBatchSize}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground">Persistent state</div>
-                    <div className="font-mono">{fmtBytes(result.v2.nPersistBytes)}</div>
-                  </div>
-                </>
-              )}
+              <div>
+                <div className="text-muted-foreground">Covert state</div>
+                <div className="font-mono">{fmtBytes(covert.stateBytes)}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">FLOP/unit</div>
+                <div className="font-mono">{fmt(covert.flopPerUnit)}</div>
+              </div>
             </div>
           </CardContent>
         </Card>
 
         {/* === Controls === */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {/* Configuration */}
+          {/* Hardware + Covert workload */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold">Configuration</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Hardware */}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setHwCustom(!hwCustom)}
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${hwCustom ? "bg-primary" : "bg-muted"}`}
-                >
-                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${hwCustom ? "translate-x-4" : "translate-x-0"}`} />
-                </button>
-                <Label className="text-xs text-muted-foreground">Custom hardware</Label>
-              </div>
-
-              {hwCustom ? (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <Label className="text-xs text-muted-foreground">GPU</Label>
-                    <Select value={gpuKey} onValueChange={setGpuKey}>
-                      <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {Object.keys(GPU_MAP).map((k) => (
-                          <SelectItem key={k} value={k}>{k}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Count</Label>
-                    <Select value={String(nGpu)} onValueChange={(v) => setNGpu(Number(v))}>
-                      <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {GPU_COUNTS.map((n) => (
-                          <SelectItem key={n} value={String(n)}>{n}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <Label className="text-xs text-muted-foreground">Hardware</Label>
-                  <Select value={hwKey} onValueChange={setHwKey}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+              {/* Hardware section */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Hardware</span>
+                  <Select value="" onValueChange={snapHardware}>
+                    <SelectTrigger className="w-40 h-7 text-xs">
+                      <SelectValue placeholder="Load preset..." />
+                    </SelectTrigger>
                     <SelectContent>
-                      {Object.entries(HARDWARE).map(([k, v]) => (
-                        <SelectItem key={k} value={k}>{v.name}</SelectItem>
+                      {Object.entries(HARDWARE_PRESETS).map(([k, v]) => (
+                        <SelectItem key={k} value={k}>{v.nGpu}× {v.gpuKey}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
-              )}
-
-              <div className="text-xs text-muted-foreground pt-1 border-t">
-                {hw.nGpu}× {hw.gpuKey} — {fmtBytes(resolvedHw.hbmBytes)} HBM, {fmt(resolvedHw.computeFlops)} FLOP/s (BF16)
+                <div className="space-y-3">
+                  <LogSlider
+                    label="Compute (FLOP/s)"
+                    valueExp={computeFlopsExp}
+                    onValueExpChange={setComputeFlopsExp}
+                    min={12} max={18} step={0.05}
+                    formatValue={fmt}
+                  />
+                  <LogSlider
+                    label="HBM (bytes)"
+                    valueExp={hbmBytesExp}
+                    onValueExpChange={setHbmBytesExp}
+                    min={9} max={14} step={0.05}
+                    formatValue={fmtBytes}
+                  />
+                </div>
               </div>
 
-              {/* Workload */}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setWlCustom(!wlCustom)}
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${wlCustom ? "bg-primary" : "bg-muted"}`}
-                >
-                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${wlCustom ? "translate-x-4" : "translate-x-0"}`} />
-                </button>
-                <Label className="text-xs text-muted-foreground">Custom workload</Label>
-              </div>
-
-              {wlCustom ? (
-                <>
-                  <div className="flex gap-2">
+              {/* Covert workload section */}
+              <div className="pt-3 border-t">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Covert workload</span>
+                  <Select value="" onValueChange={snapCovert}>
+                    <SelectTrigger className="w-48 h-7 text-xs">
+                      <SelectValue placeholder="Load preset..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(COVERT_PRESETS).map(([k, v]) => (
+                        <SelectItem key={k} value={k}>
+                          {v.kind === "inference" ? v.modelKey : `Train ${v.modelKey}`}
+                          {v.syncPolicy && v.syncPolicy.mode !== "none" ? ` (${v.syncPolicy.mode})` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-3">
+                  <LogSlider
+                    label="Covert state n (bytes)"
+                    valueExp={nBytesExp}
+                    onValueExpChange={setNBytesExp}
+                    min={6} max={13} step={0.05}
+                    formatValue={fmtBytes}
+                  />
+                  <LogSlider
+                    label="FLOP per unit (g)"
+                    valueExp={gFlopExp}
+                    onValueExpChange={setGFlopExp}
+                    min={6} max={15} step={0.05}
+                    formatValue={fmt}
+                  />
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setWorkloadKind("inference")}
-                      className={`px-2 py-1 text-xs rounded ${workloadKind === "inference" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+                      onClick={() => setDInEnabled(!dInEnabled)}
+                      className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${dInEnabled ? "bg-primary" : "bg-muted"}`}
                     >
-                      Inference
+                      <span className={`pointer-events-none block h-3 w-3 rounded-full bg-background shadow-lg transition-transform ${dInEnabled ? "translate-x-3" : "translate-x-0"}`} />
                     </button>
-                    <button
-                      onClick={() => setWorkloadKind("training")}
-                      className={`px-2 py-1 text-xs rounded ${workloadKind === "training" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-                    >
-                      Training
-                    </button>
-                  </div>
-
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Model</Label>
-                    <Select value={modelKey} onValueChange={setModelKey}>
-                      <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {Object.keys(MODEL_MAP).map((k) => (
-                          <SelectItem key={k} value={k}>{k}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {workloadKind === "inference" && (
-                    <div>
-                      <div className="flex justify-between">
-                        <Label className="text-xs text-muted-foreground">Context length</Label>
-                        <span className="text-xs font-mono">{contextLength.toLocaleString()}</span>
-                      </div>
-                      <Slider
-                        value={[ctxExp]}
-                        onValueChange={([v]) => setCtxExp(v)}
-                        min={8} max={17} step={0.5}
-                        className="mt-1"
+                    <div className="flex-1">
+                      <LogSlider
+                        label="Ingress per unit d_in (bytes)"
+                        valueExp={dInExp}
+                        onValueExpChange={setDInExp}
+                        min={0} max={6} step={0.05}
+                        formatValue={(v) => dInEnabled ? fmtBytes(v) : "0"}
                       />
                     </div>
-                  )}
-
-                  {workloadKind === "training" && (
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Sync policy</Label>
-                      <Select value={syncMode} onValueChange={(v) => setSyncMode(v as typeof syncMode)}>
-                        <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">No sync</SelectItem>
-                          <SelectItem value="checkpoint">Checkpoint every 1M tokens</SelectItem>
-                          <SelectItem value="periodic-updates">Periodic gradient sync</SelectItem>
-                        </SelectContent>
-                      </Select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setDOutEnabled(!dOutEnabled)}
+                      className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${dOutEnabled ? "bg-primary" : "bg-muted"}`}
+                    >
+                      <span className={`pointer-events-none block h-3 w-3 rounded-full bg-background shadow-lg transition-transform ${dOutEnabled ? "translate-x-3" : "translate-x-0"}`} />
+                    </button>
+                    <div className="flex-1">
+                      <LogSlider
+                        label="Egress per unit d_out (bytes)"
+                        valueExp={dOutExp}
+                        onValueExpChange={setDOutExp}
+                        min={0} max={6} step={0.05}
+                        formatValue={(v) => dOutEnabled ? fmtBytes(v) : "0"}
+                      />
                     </div>
-                  )}
-                </>
-              ) : (
-                <div>
-                  <Label className="text-xs text-muted-foreground">Covert Workload</Label>
-                  <Select value={wlKey} onValueChange={setWlKey}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(WORKLOADS_V2).map(([k, v]) => (
-                        <SelectItem key={k} value={k}>{v.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  </div>
                 </div>
-              )}
+              </div>
 
               {/* Honest load */}
-              <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Honest compute utilization (f*/Ĝ)</Label>
-                  <span className="text-xs font-mono">{computeFrac}%</span>
+              <div className="pt-3 border-t">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Honest load</span>
+                <div className="space-y-3 mt-2">
+                  <div>
+                    <div className="flex justify-between">
+                      <Label className="text-xs text-muted-foreground">Compute utilization (f*/Ĝ)</Label>
+                      <span className="text-xs font-mono">{computeFrac}%</span>
+                    </div>
+                    <Slider
+                      value={[computeFrac]}
+                      onValueChange={([v]) => setComputeFrac(v)}
+                      min={0} max={100} step={1}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex justify-between">
+                      <Label className="text-xs text-muted-foreground">Memory utilization (m*/M̂)</Label>
+                      <span className="text-xs font-mono">{memoryFrac}%</span>
+                    </div>
+                    <Slider
+                      value={[memoryFrac]}
+                      onValueChange={([v]) => setMemoryFrac(v)}
+                      min={0} max={100} step={1}
+                      className="mt-1"
+                    />
+                  </div>
                 </div>
-                <Slider
-                  value={[computeFrac]}
-                  onValueChange={([v]) => setComputeFrac(v)}
-                  min={0} max={100} step={1}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Honest memory utilization (m*/M̂)</Label>
-                  <span className="text-xs font-mono">{memoryFrac}%</span>
+                <div className="text-xs text-muted-foreground pt-1">
+                  {"Proven compute: α \u00D7 f*/\u011C = "}{((alpha / 100) * computeFrac).toFixed(1)}{"% of \u011C"}
                 </div>
-                <Slider
-                  value={[memoryFrac]}
-                  onValueChange={([v]) => setMemoryFrac(v)}
-                  min={0} max={100} step={1}
-                  className="mt-1"
-                />
-              </div>
-              <div className="text-xs text-muted-foreground pt-1 border-t">
-                {"Proven compute: α \u00D7 f*/\u011C = "}{((alpha / 100) * computeFrac).toFixed(1)}{"% of \u011C"}
               </div>
             </CardContent>
           </Card>
@@ -854,12 +807,10 @@ export function GammaDashboard() {
 
         {/* === Sweeps === */}
         <Tabs defaultValue="egress">
-          <TabsList className={`grid w-full ${ctxSweep.length > 0 ? "grid-cols-3" : "grid-cols-2"}`}>
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="egress">Egress Sweep</TabsTrigger>
             <TabsTrigger value="compute">Compute Sweep</TabsTrigger>
-            {ctxSweep.length > 0 && (
-              <TabsTrigger value="context">Context Length</TabsTrigger>
-            )}
+            <TabsTrigger value="state">Covert State Sweep</TabsTrigger>
           </TabsList>
           <TabsContent value="egress" className="mt-4">
             <Card>
@@ -885,22 +836,20 @@ export function GammaDashboard() {
               </CardContent>
             </Card>
           </TabsContent>
-          {ctxSweep.length > 0 && (
-            <TabsContent value="context" className="mt-4">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-semibold">Γ vs Context Length</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <SweepChart
-                    points={ctxSweep}
-                    paramLabel="Context Length"
-                    xFormatter={(v) => v >= 1024 ? `${(v / 1024).toFixed(0)}K` : String(v)}
-                  />
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
+          <TabsContent value="state" className="mt-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold">Γ vs Covert State (n)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SweepChart
+                  points={nSweep}
+                  paramLabel="Covert state (n)"
+                  xFormatter={fmtBytes}
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
         </Tabs>
       </div>
     </div>

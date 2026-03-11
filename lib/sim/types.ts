@@ -82,6 +82,14 @@ export type Scenario = {
   covert: CovertWorkload
 }
 
+/** Direct scenario with raw numeric fields — no GPU/model lookup required */
+export type DirectScenario = {
+  hardware: { computeFlops: number; hbmBytes: number }
+  honest: HonestLoad
+  verifier: Verifier
+  covert: CovertWorkloadV1
+}
+
 export type ThroughputEstimate = {
   unitsPerSecond: number
   regime?: "compute" | "memory" | "latency" | "comm" | "memory-bandwidth" | "under-batched"

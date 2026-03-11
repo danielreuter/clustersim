@@ -1,5 +1,6 @@
 import type {
   Scenario,
+  DirectScenario,
   ResolvedHardware,
   ThroughputEstimate,
   GammaResult,
@@ -169,6 +170,23 @@ export function composeGamma(
 }
 
 // ---------------------------------------------------------------------------
+// Direct simulation (raw numeric params, no roofline)
+// ---------------------------------------------------------------------------
+
+/**
+ * Simulate with raw numeric parameters. No GPU/model lookup or roofline.
+ * Takes a DirectScenario with explicit computeFlops, hbmBytes, and CovertWorkloadV1.
+ */
+export function simulateDirect(scenario: DirectScenario): GammaResult {
+  const { hardware, honest, verifier, covert } = scenario
+  const dedicated = dedicatedThroughput(hardware.computeFlops, covert)
+  const verified = verifiedComputeThroughput(
+    hardware.computeFlops, verifier.alpha, honest.claimedComputeFlops, covert,
+  )
+  return composeGamma(hardware.hbmBytes, honest, verifier, covert, dedicated, verified)
+}
+
+// ---------------------------------------------------------------------------
 // Sweep + range utilities
 // ---------------------------------------------------------------------------
 
@@ -182,6 +200,17 @@ export function sweep(
   return values.map((value) => ({
     value,
     result: simulate(mutate(base, value)),
+  }))
+}
+
+export function sweepDirect(
+  base: DirectScenario,
+  mutate: (scenario: DirectScenario, value: number) => DirectScenario,
+  values: number[],
+): SweepPoint[] {
+  return values.map((value) => ({
+    value,
+    result: simulateDirect(mutate(base, value)),
   }))
 }
 

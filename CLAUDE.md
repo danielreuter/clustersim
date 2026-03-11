@@ -25,15 +25,15 @@ All fields are optional (sensible defaults apply):
 |---|---|---|---|
 | `gpu` | string | `"H100"` | GPU type: H100, H200, A100, H20, B200, Rubin |
 | `count` | number | `8` | Number of GPUs |
-| `computeUtil` | 0-1 | `0.5` | Honest compute utilization |
-| `memoryUtil` | 0-1 | `0.5` | Honest memory utilization |
-| `alpha` | 0-1 | `1.0` | Proved compute fraction (matmul transparency) |
-| `bOut` | bytes/s | `20000` | Covert egress bandwidth |
-| `bIn` | bytes/s | `100000` | Covert ingress bandwidth |
+| `computeUtil` | 0-1 | `0.96` | Honest compute utilization |
+| `memoryUtil` | 0-1 | `0.83` | Honest memory utilization |
+| `alpha` | 0-1 | `0.83` | Proved compute fraction (matmul transparency) |
+| `bOut` | bytes/s | `1e6` | Covert egress bandwidth |
+| `bIn` | bytes/s | `100e6` | Covert ingress bandwidth |
 | `sanitization` | bool | `true` | Enable memory sanitization |
-| `epochS` | seconds | `5` | Sanitization epoch length |
-| `downtimeS` | seconds | `0.25` | Downtime per sanitization event |
-| `survivingBytes` | bytes | `17e9` | Covert state surviving sanitization |
+| `epochS` | seconds | `3981` | Sanitization epoch length |
+| `downtimeS` | seconds | `10` | Downtime per sanitization event |
+| `survivingBytes` | bytes | `100e9` | Covert state surviving sanitization |
 | `stateBytes` | bytes | `140e9` | Total covert state size (e.g. model weights) |
 | `flopPerUnit` | FLOP | `580e6` | Compute per unit of covert output |
 | `ingressBytesPerUnit` | bytes | `0` | Covert ingress per input |

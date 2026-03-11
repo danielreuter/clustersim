@@ -9,15 +9,15 @@
  * Input JSON fields (all optional, sensible defaults):
  *   gpu          — GPU key: H100, H200, A100, H20, B200, Rubin  (default: H100)
  *   count        — number of GPUs                                 (default: 8)
- *   computeUtil  — honest compute utilization 0-1                 (default: 0.5)
- *   memoryUtil   — honest memory utilization 0-1                  (default: 0.5)
- *   alpha        — proved compute fraction 0-1                    (default: 1.0)
- *   bOut         — covert egress bandwidth bytes/s                (default: 1000000)
- *   bIn          — covert ingress bandwidth bytes/s               (default: 100000000)
+ *   computeUtil  — honest compute utilization 0-1                 (default: 0.96)
+ *   memoryUtil   — honest memory utilization 0-1                  (default: 0.83)
+ *   alpha        — proved compute fraction 0-1                    (default: 0.83)
+ *   bOut         — covert egress bandwidth bytes/s                (default: 1e6)
+ *   bIn          — covert ingress bandwidth bytes/s               (default: 100e6)
  *   sanitization — enable memory sanitization                     (default: true)
- *   epochS       — sanitization epoch length seconds              (default: 5)
- *   downtimeS    — sanitization downtime seconds                  (default: 0.25)
- *   survivingBytes — covert bytes surviving sanitization          (default: 17e9)
+ *   epochS       — sanitization epoch length seconds              (default: 3981)
+ *   downtimeS    — sanitization downtime seconds                  (default: 10)
+ *   survivingBytes — covert bytes surviving sanitization          (default: 100e9)
  *   stateBytes   — covert state size bytes                        (default: 140e9)
  *   flopPerUnit  — FLOP per unit of covert output                 (default: 580e6)
  *   ingressBytesPerUnit — covert ingress per input                (default: 0)
@@ -53,9 +53,9 @@ function run(input: Input = {}) {
   const count = input.count ?? 8
   const hw = computeHardwarePreset(gpu, count)
 
-  const computeUtil = input.computeUtil ?? 0.5
-  const memoryUtil = input.memoryUtil ?? 0.5
-  const alpha = input.alpha ?? 1.0
+  const computeUtil = input.computeUtil ?? 0.96
+  const memoryUtil = input.memoryUtil ?? 0.83
+  const alpha = input.alpha ?? 0.83
 
   const scenario: DirectScenario = {
     hardware: hw,
@@ -69,9 +69,9 @@ function run(input: Input = {}) {
       covertEgressBps: input.bOut ?? 1e6,
       covertIngressBps: input.bIn ?? 100e6,
       sanitizationEnabled: input.sanitization ?? true,
-      epochSeconds: input.epochS ?? 5,
-      downtimeSeconds: input.downtimeS ?? 0.25,
-      survivingStateBytes: input.survivingBytes ?? 17e9,
+      epochSeconds: input.epochS ?? 3981,
+      downtimeSeconds: input.downtimeS ?? 10,
+      survivingStateBytes: input.survivingBytes ?? 100e9,
     },
     covert: {
       label: "cli",

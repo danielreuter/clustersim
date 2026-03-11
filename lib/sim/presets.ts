@@ -4,6 +4,7 @@ import { GPU_MAP } from "@/lib/erdil/gpus"
 import { rooflineLite, rooflineLiteTraining, deriveSyncIO, resolveHardware } from "./roofline"
 
 const GB = 1e9
+const MB = 1e6
 const KB = 1e3
 
 // ---------------------------------------------------------------------------
@@ -105,12 +106,12 @@ export const WORKLOADS_V2: Record<string, CovertWorkloadInference | CovertWorklo
 // ---------------------------------------------------------------------------
 
 export const VERIFIER_FULL: Verifier = {
-  alpha: 1.0,
-  covertIngressBps: 100 * KB,
-  covertEgressBps: 20 * KB,
-  survivingStateBytes: 17 * GB,
-  epochSeconds: 5,
-  downtimeSeconds: 0.25,
+  alpha: 0.83,
+  covertIngressBps: 100 * MB,
+  covertEgressBps: 1 * MB,
+  survivingStateBytes: 100 * GB,
+  epochSeconds: 3981,
+  downtimeSeconds: 10,
   sanitizationEnabled: true,
 }
 

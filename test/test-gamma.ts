@@ -88,6 +88,7 @@ console.log("\n=== Llama 70B on 8×H100 (no sanitization) ===")
 console.log("\n=== Llama 70B on 8×H100, 98% honest compute ===")
 {
   const s = inferenceScenario(HW_8xH100, "Llama 3 70B", 2048, false, 1.0, 0.98, 0.1)
+  s.verifier = { ...s.verifier, alpha: 1.0 }
   const r = simulate(s)
   console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
   // With only 2% compute remaining, should see significant overhead
@@ -199,7 +200,7 @@ console.log("\n=== simulateDirect: basic ===")
   const ds: DirectScenario = {
     hardware: hw,
     honest: { claimedComputeFlops: hw.computeFlops * 0.5, claimedMemoryBytes: hw.hbmBytes * 0.1 },
-    verifier: VERIFIER_NO_SANITIZATION,
+    verifier: { ...VERIFIER_NO_SANITIZATION, alpha: 1.0 },
     covert: {
       label: "test",
       kind: "inference",
@@ -212,7 +213,7 @@ console.log("\n=== simulateDirect: basic ===")
   }
   const r = simulateDirect(ds)
   console.log(`  Γ = ${r.gamma.toFixed(2)}, dominant = ${r.dominant}`)
-  // With 50% honest compute, α=1 → gammaCompute ≈ 2
+  // With 50% honest compute, α=1.0 → gammaCompute ≈ 2
   assert("direct: gammaCompute ≈ 2", r.gammaCompute, 2, 0.01)
   assert("direct: finite", r.finite ? 1 : 0, 1)
 }

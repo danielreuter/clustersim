@@ -806,15 +806,15 @@ function decodeState(hash: string): DashState | null {
       return {
         cfe: Math.log10(hw.computeFlops),
         hbe: Math.log10(hw.hbmBytes),
-        cf: parsed.cf ?? 50,
-        mf: parsed.mf ?? 50,
-        a: parsed.a ?? 100,
-        bo: parsed.bo ?? Math.log10(20e3),
-        bi: parsed.bi ?? Math.log10(100e3),
+        cf: parsed.cf ?? 96,
+        mf: parsed.mf ?? 83,
+        a: parsed.a ?? 83,
+        bo: parsed.bo ?? Math.log10(1e6),
+        bi: parsed.bi ?? Math.log10(100e6),
         sn: parsed.sn ?? true,
-        ep: parsed.ep ?? Math.log10(5),
-        dt: parsed.dt ?? Math.log10(0.25),
-        sg: parsed.sg ?? 17,
+        ep: parsed.ep ?? Math.log10(3981),
+        dt: parsed.dt ?? Math.log10(10),
+        sg: parsed.sg ?? 100,
         ne: covert ? Math.log10(covert.stateBytes) : Math.log10(DEFAULT_COVERT.stateBytes),
         ge: covert ? Math.log10(covert.flopPerUnit) : Math.log10(DEFAULT_COVERT.flopPerUnit),
         die: covert && covert.ingressBytesPerUnit > 0 ? Math.log10(covert.ingressBytesPerUnit) : -1,
@@ -838,20 +838,20 @@ export function GammaDashboard() {
   const [gpuCount, setGpuCount] = useState(8)
 
   // Honest load
-  const [computeFrac, setComputeFrac] = useState(initial?.cf ?? 50)
-  const [memoryFrac, setMemoryFrac] = useState(initial?.mf ?? 50)
+  const [computeFrac, setComputeFrac] = useState(initial?.cf ?? 96)
+  const [memoryFrac, setMemoryFrac] = useState(initial?.mf ?? 83)
 
   // Verifier
-  const [alpha, setAlpha] = useState(initial?.a ?? 100)
-  const [alphaMemory, setAlphaMemory] = useState(initial?.am ?? 100)
+  const [alpha, setAlpha] = useState(initial?.a ?? 83)
+  const [alphaMemory, setAlphaMemory] = useState(initial?.am ?? 80)
   const [bOutExp, setBOutExp] = useState(initial?.bo ?? Math.log10(1e6))
   const [bInExp, setBInExp] = useState(initial?.bi ?? Math.log10(100e6))
   const [sanitization, setSanitization] = useState(initial?.sn ?? true)
-  const [epochSExp, setEpochSExp] = useState(initial?.ep ?? Math.log10(5))
+  const [epochSExp, setEpochSExp] = useState(initial?.ep ?? Math.log10(3981))
   const epochS = 10 ** epochSExp
-  const [downtimeSExp, setDowntimeSExp] = useState(initial?.dt ?? Math.log10(0.25))
+  const [downtimeSExp, setDowntimeSExp] = useState(initial?.dt ?? Math.log10(10))
   const downtimeS = 10 ** downtimeSExp
-  const [survivingGB, setSurvivingGB] = useState(initial?.sg ?? 17)
+  const [survivingGB, setSurvivingGB] = useState(initial?.sg ?? 100)
 
 
   // Covert workload: raw log-scale sliders

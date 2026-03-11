@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect, useRef } from "react"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
@@ -32,7 +33,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function fmt(n: number, decimals = 1): string {
-  if (!Number.isFinite(n)) return "∞"
+  if (!Number.isFinite(n)) return "—"
   if (n >= 1e15) return `${(n / 1e15).toFixed(decimals)} PF/s`
   if (n >= 1e12) return `${(n / 1e12).toFixed(decimals)} TF/s`
   if (n >= 1e9) return `${(n / 1e9).toFixed(decimals)} G`
@@ -56,14 +57,14 @@ function fmtBw(bps: number): string {
   return `${bps.toFixed(0)} B/s`
 }
 
-function fmtGamma(g: number): string {
-  if (!Number.isFinite(g)) return "∞"
+function fmtGamma(g: number, large?: boolean): string {
+  if (!Number.isFinite(g)) return large ? "Infeasible" : "—"
   if (g >= 1000) return `${(g / 1000).toFixed(1)}K×`
   return `${g.toFixed(1)}×`
 }
 
 function fmtTime(s: number): string {
-  if (!Number.isFinite(s)) return "∞"
+  if (!Number.isFinite(s)) return "—"
   if (s >= 86400) return `${(s / 86400).toFixed(1)} days`
   if (s >= 3600) return `${(s / 3600).toFixed(1)} hrs`
   if (s >= 60) return `${(s / 60).toFixed(1)} min`
@@ -129,18 +130,38 @@ function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaR
   const tReload = result.tReload
   const tCovert = Math.max(0, result.tCovert)
   const tSanitize = downtimeS
+  const tTotal = tSanitize + tReload + tCovert
+  const overflows = tTotal > epochS
 
-  const downloadFrac = Math.min(tReload / epochS, 1)
-  const operationalFrac = Math.min(tCovert / epochS, 1 - downloadFrac)
-  const sanitizeFrac = Math.min(tSanitize / epochS, 1 - downloadFrac - operationalFrac)
+  if (overflows) {
+    // Nothing fits — show grayed-out bar with infinity
+    const sanitizePct = (tSanitize / tTotal) * 100
+    const downloadPct = (tReload / tTotal) * 100
+    const operationalPct = (tCovert / tTotal) * 100
+    return (
+      <div className="flex items-center gap-2 text-sm">
+        <span className="w-20 text-right text-red-600 shrink-0">—</span>
+        <div className="flex-1 h-5 bg-muted rounded overflow-hidden flex opacity-40">
+          <div className="h-full bg-emerald-400 transition-all" style={{ width: `${sanitizePct}%` }} />
+          <div className="h-full bg-amber-400 transition-all" style={{ width: `${downloadPct}%` }} />
+          <div className="h-full bg-blue-300 transition-all" style={{ width: `${operationalPct}%` }} />
+        </div>
+        <span className="w-16 text-right text-red-600 shrink-0">No fit</span>
+      </div>
+    )
+  }
+
+  const sanitizeFrac = tSanitize / epochS
+  const downloadFrac = tReload / epochS
+  const operationalFrac = tCovert / epochS
 
   return (
     <div className="flex items-center gap-2 text-sm">
       <span className="w-20 text-right text-muted-foreground shrink-0">{fmtGamma(result.gammaDuty)}</span>
       <div className="flex-1 h-5 bg-muted rounded overflow-hidden flex">
+        <div className="h-full bg-emerald-400 transition-all" style={{ width: `${sanitizeFrac * 100}%` }} />
         <div className="h-full bg-amber-400 transition-all" style={{ width: `${downloadFrac * 100}%` }} />
         <div className="h-full bg-blue-300 transition-all" style={{ width: `${operationalFrac * 100}%` }} />
-        <div className="h-full bg-foreground/15 transition-all" style={{ width: `${sanitizeFrac * 100}%` }} />
       </div>
       <span className="w-16 text-right text-muted-foreground shrink-0">{operationalFrac > 0 ? `${(operationalFrac * 100).toFixed(0)}%` : "0%"}</span>
     </div>
@@ -152,8 +173,8 @@ function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaR
 // ---------------------------------------------------------------------------
 
 function MemoryFitBar({ result, totalHbm, honestMem, covertState }: { result: GammaResult; totalHbm: number; honestMem: number; covertState: number }) {
-  const honestFrac = Math.min(honestMem / totalHbm, 1)
-  const covertFrac = Math.min(covertState / totalHbm, 1 - honestFrac)
+  const covertFrac = Math.min(covertState / totalHbm, 1)
+  const honestFrac = Math.min(honestMem / totalHbm, 1 - covertFrac)
   const overflows = result.fitMarginBytes < 0
 
   return (
@@ -162,14 +183,14 @@ function MemoryFitBar({ result, totalHbm, honestMem, covertState }: { result: Ga
       <div className="flex-1 h-5 bg-muted rounded overflow-hidden">
         <div className="h-full flex">
           <div
-            className="h-full bg-blue-300 transition-all"
-            style={{ width: `${honestFrac * 100}%` }}
-            title={`Honest: ${fmtBytes(honestMem)}`}
-          />
-          <div
             className={`h-full transition-all ${overflows ? "bg-red-400" : "bg-amber-400"}`}
             style={{ width: `${covertFrac * 100}%` }}
             title={`Covert: ${fmtBytes(covertState)}`}
+          />
+          <div
+            className="h-full bg-blue-300 transition-all"
+            style={{ width: `${honestFrac * 100}%` }}
+            title={`Honest: ${fmtBytes(honestMem)}`}
           />
         </div>
       </div>
@@ -191,7 +212,7 @@ function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; 
 
   const finitePoints = points.filter((p) => Number.isFinite(p.result.gamma))
   if (finitePoints.length < 2) {
-    return <div className="text-sm text-muted-foreground italic">All values are ∞ (sanitization dominates)</div>
+    return <div className="text-sm text-muted-foreground italic">All values infeasible</div>
   }
 
   const xMin = Math.log10(finitePoints[0].value)
@@ -285,7 +306,36 @@ function decodeState(hash: string): DashState | null {
   try {
     const raw = hash.startsWith("#") ? hash.slice(1) : hash
     if (!raw) return null
-    return JSON.parse(atob(raw)) as DashState
+    const parsed = JSON.parse(atob(raw))
+    // Current format has `cfe` — return directly
+    if ("cfe" in parsed) return parsed as DashState
+    // Legacy format: has `gk`/`ng`/`wl` keys — migrate
+    if ("gk" in parsed && "ng" in parsed) {
+      const hw = computeHardwarePreset(parsed.gk, parsed.ng)
+      const wlKey = parsed.wl as string | undefined
+      const covertConfig = wlKey && COVERT_PRESETS[wlKey] ? COVERT_PRESETS[wlKey] : null
+      const covert = covertConfig ? computeCovertPreset(hw, covertConfig) : null
+      return {
+        cfe: Math.log10(hw.computeFlops),
+        hbe: Math.log10(hw.hbmBytes),
+        cf: parsed.cf ?? 50,
+        mf: parsed.mf ?? 50,
+        a: parsed.a ?? 100,
+        bo: parsed.bo ?? Math.log10(20e3),
+        bi: parsed.bi ?? Math.log10(100e3),
+        sn: parsed.sn ?? true,
+        ep: parsed.ep ?? Math.log10(5),
+        dt: parsed.dt ?? 0.25,
+        sg: parsed.sg ?? 17,
+        ne: covert ? Math.log10(covert.stateBytes) : Math.log10(DEFAULT_COVERT.stateBytes),
+        ge: covert ? Math.log10(covert.flopPerUnit) : Math.log10(DEFAULT_COVERT.flopPerUnit),
+        die: covert && covert.ingressBytesPerUnit > 0 ? Math.log10(covert.ingressBytesPerUnit) : 0,
+        dien: covert ? covert.ingressBytesPerUnit > 0 : DEFAULT_COVERT.ingressBytesPerUnit > 0,
+        doe: covert && covert.egressBytesPerUnit > 0 ? Math.log10(covert.egressBytesPerUnit) : 0,
+        doen: covert ? covert.egressBytesPerUnit > 0 : DEFAULT_COVERT.egressBytesPerUnit > 0,
+      }
+    }
+    return null
   } catch { return null }
 }
 
@@ -308,7 +358,8 @@ export function GammaDashboard() {
   const [sanitization, setSanitization] = useState(initial?.sn ?? true)
   const [epochSExp, setEpochSExp] = useState(initial?.ep ?? Math.log10(5))
   const epochS = 10 ** epochSExp
-  const [downtimeS, setDowntimeS] = useState(initial?.dt ?? 0.25)
+  const [downtimeSExp, setDowntimeSExp] = useState(initial?.dt ?? Math.log10(0.25))
+  const downtimeS = 10 ** downtimeSExp
   const [survivingGB, setSurvivingGB] = useState(initial?.sg ?? 17)
 
   // Covert workload: raw log-scale sliders
@@ -318,6 +369,32 @@ export function GammaDashboard() {
   const [dInEnabled, setDInEnabled] = useState(initial?.dien ?? DEFAULT_COVERT.ingressBytesPerUnit > 0)
   const [dOutExp, setDOutExp] = useState(initial?.doe ?? (DEFAULT_COVERT.egressBytesPerUnit > 0 ? Math.log10(DEFAULT_COVERT.egressBytesPerUnit) : 0))
   const [dOutEnabled, setDOutEnabled] = useState(initial?.doen ?? DEFAULT_COVERT.egressBytesPerUnit > 0)
+
+  // Re-apply URL hash state after mount (handles cases where hash isn't available during initial render)
+  const didApplyHash = useRef(initial !== null)
+  useEffect(() => {
+    if (didApplyHash.current) return
+    const state = decodeState(window.location.hash)
+    if (!state) return
+    didApplyHash.current = true
+    setComputeFlopsExp(state.cfe)
+    setHbmBytesExp(state.hbe)
+    setComputeFrac(state.cf)
+    setMemoryFrac(state.mf)
+    setAlpha(state.a)
+    setBOutExp(state.bo)
+    setBInExp(state.bi)
+    setSanitization(state.sn)
+    setEpochSExp(state.ep)
+    setDowntimeSExp(state.dt)
+    setSurvivingGB(state.sg)
+    setNBytesExp(state.ne)
+    setGFlopExp(state.ge)
+    setDInExp(state.die)
+    setDInEnabled(state.dien)
+    setDOutExp(state.doe)
+    setDOutEnabled(state.doen)
+  }, [])
 
   const computeFlops = 10 ** computeFlopsExp
   const hbmBytes = 10 ** hbmBytesExp
@@ -379,7 +456,7 @@ export function GammaDashboard() {
       sanitizationEnabled: sanitization,
     },
     covert,
-  }), [computeFlops, hbmBytes, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochS, downtimeS, survivingGB, covert])
+  }), [computeFlops, hbmBytes, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochS, downtimeSExp, survivingGB, covert])
 
   const result = useMemo(() => simulateDirect(scenario), [scenario])
 
@@ -396,12 +473,12 @@ export function GammaDashboard() {
     const state: DashState = {
       cfe: computeFlopsExp, hbe: hbmBytesExp,
       cf: computeFrac, mf: memoryFrac, a: alpha,
-      bo: bOutExp, bi: bInExp, sn: sanitization, ep: epochSExp, dt: downtimeS, sg: survivingGB,
+      bo: bOutExp, bi: bInExp, sn: sanitization, ep: epochSExp, dt: downtimeSExp, sg: survivingGB,
       ne: nBytesExp, ge: gFlopExp, die: dInExp, dien: dInEnabled, doe: dOutExp, doen: dOutEnabled,
     }
     const encoded = encodeState(state)
-    if (encoded) window.history.replaceState(null, "", `#${encoded}`)
-    navigator.clipboard.writeText(window.location.href)
+    const url = `${window.location.origin}${window.location.pathname}#${encoded}`
+    navigator.clipboard.writeText(url)
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 2000)
   }
@@ -448,11 +525,14 @@ export function GammaDashboard() {
     <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-5xl px-4 py-6">
         {/* Header */}
-        <div className="mb-6">
+        <div className="mb-6 flex items-start justify-between">
+          <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Covert Overhead Simulator</h1>
           <p className="text-sm text-muted-foreground mt-1">
             How much slower does a covert workload run under verification?
           </p>
+          </div>
+          <ThemeToggle />
         </div>
 
         {/* === Result Card === */}
@@ -461,9 +541,9 @@ export function GammaDashboard() {
             {/* Header: Γ value + copy button */}
             <div className="flex items-baseline gap-4 mb-5 h-14">
               <span className="text-5xl font-bold font-mono tracking-tight leading-none">
-                {fmtGamma(result.gamma)}
+                {fmtGamma(result.gamma, true)}
               </span>
-              <span className="text-sm text-muted-foreground">overhead</span>
+              {result.finite && <span className="text-sm text-muted-foreground">overhead</span>}
               <div className="ml-auto" />
               <button
                 onClick={handleCopyLink}
@@ -489,10 +569,6 @@ export function GammaDashboard() {
               </button>
             </div>
 
-            {result.reason && (
-              <p className="text-sm text-muted-foreground mb-4 italic">{result.reason}</p>
-            )}
-
             {/* --- Layer 1: Operational overhead --- */}
             <div className="mb-5">
               <div className="flex items-center justify-between mb-2">
@@ -514,8 +590,8 @@ export function GammaDashboard() {
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory fit</span>
                 <span className="flex items-center gap-3">
-                  <LegendDot color="bg-blue-300" label="Honest" />
                   <LegendDot color="bg-amber-400" label="Covert" />
+                  <LegendDot color="bg-blue-300" label="Honest" />
                 </span>
               </div>
               <MemoryFitBar
@@ -532,9 +608,9 @@ export function GammaDashboard() {
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sanitization cycle</span>
                   <span className="flex items-center gap-3">
+                    <LegendDot color="bg-emerald-400" label="Sanitization" />
                     <LegendDot color="bg-amber-400" label="Covert download" />
                     <LegendDot color="bg-blue-300" label="Operational" />
-                    <LegendDot color="bg-foreground/15" label="Sanitization" />
                   </span>
                 </div>
                 <EpochTimeline result={result} epochS={epochS} downtimeS={downtimeS} disabled={result.fitMarginBytes < 0} />
@@ -778,12 +854,12 @@ export function GammaDashboard() {
                   <div>
                     <div className="flex justify-between">
                       <Label className="text-xs text-muted-foreground">Downtime per epoch (T)</Label>
-                      <span className="text-xs font-mono">{downtimeS}s</span>
+                      <span className="text-xs font-mono">{fmtTime(downtimeS)}</span>
                     </div>
                     <Slider
-                      value={[downtimeS]}
-                      onValueChange={([v]) => setDowntimeS(v)}
-                      min={0.01} max={10} step={0.01}
+                      value={[downtimeSExp]}
+                      onValueChange={([v]) => setDowntimeSExp(v)}
+                      min={-2} max={3.76} step={0.05}
                       className="mt-1"
                     />
                   </div>

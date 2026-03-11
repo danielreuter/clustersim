@@ -84,28 +84,38 @@ function LegendDot({ color, label }: { color: string; label: string }) {
   )
 }
 
+function OverflowStripes() {
+  return (
+    <div
+      className="absolute inset-0 pointer-events-none rounded"
+      style={{
+        backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 2px, rgba(0,0,0,0.25) 2px, rgba(0,0,0,0.25) 5px)",
+      }}
+    />
+  )
+}
+
 function OpBar({ label, value, max, isBottleneck, disabled }: { label: string; value: number; max: number; isBottleneck: boolean; disabled?: boolean }) {
   const width = Number.isFinite(value) ? Math.min(100, (Math.log10(Math.max(1, value)) / Math.log10(Math.max(10, max))) * 100) : 100
-  const isInf = !Number.isFinite(value)
   if (disabled) {
     return (
-      <div className="flex items-center gap-2 text-sm opacity-30">
+      <div className="flex items-center gap-2 text-sm">
         <span className="w-20 text-right text-muted-foreground shrink-0">{label}</span>
-        <div className="flex-1 h-5 bg-muted rounded overflow-hidden" />
-        <span className="w-16 text-right font-mono shrink-0">--</span>
+        <div className="flex-1 h-5 bg-muted rounded overflow-hidden opacity-50" />
+        <span className="w-16 text-right font-mono text-muted-foreground shrink-0">--</span>
       </div>
     )
   }
   return (
     <div className="flex items-center gap-2 text-sm">
-      <span className={`w-20 text-right shrink-0 ${isBottleneck ? "text-red-600 font-medium" : "text-muted-foreground"}`}>{label}</span>
+      <span className={`w-20 text-right shrink-0 ${isBottleneck ? "font-medium" : "text-muted-foreground"}`}>{label}</span>
       <div className="flex-1 h-5 bg-muted rounded overflow-hidden">
         <div
-          className={`h-full rounded transition-all ${isInf ? "bg-red-500" : isBottleneck ? "bg-red-500" : "bg-foreground/25"}`}
+          className={`h-full rounded transition-all ${isBottleneck ? "bg-foreground/80" : "bg-foreground/35"}`}
           style={{ width: `${width}%` }}
         />
       </div>
-      <span className={`w-16 text-right font-mono shrink-0 ${isBottleneck ? "text-red-600" : ""}`}>{fmtGamma(value)}</span>
+      <span className={`w-16 text-right font-mono shrink-0 ${isBottleneck ? "font-medium" : ""}`}>{fmtGamma(value)}</span>
     </div>
   )
 }
@@ -114,15 +124,15 @@ function OpBar({ label, value, max, isBottleneck, disabled }: { label: string; v
 // Epoch timeline
 // ---------------------------------------------------------------------------
 
-function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaResult; epochS: number; downtimeS: number; disabled?: boolean }) {
+function EpochTimeline({ result, epochS, downtimeS, disabled, overflows }: { result: GammaResult; epochS: number; downtimeS: number; disabled?: boolean; overflows?: boolean }) {
   if (!Number.isFinite(epochS) || epochS <= 0) return null
 
   if (disabled) {
     return (
-      <div className="flex items-center gap-2 text-sm opacity-30">
-        <span className="w-20 text-right text-muted-foreground shrink-0">--</span>
-        <div className="flex-1 h-5 bg-muted rounded overflow-hidden" />
-        <span className="w-16 text-right text-muted-foreground shrink-0">--</span>
+      <div className="flex items-center gap-2 text-sm">
+        <span className="w-20 text-right text-muted-foreground shrink-0">Time</span>
+        <div className="flex-1 h-5 bg-muted rounded overflow-hidden opacity-50" />
+        <span className="w-16 text-right font-mono text-muted-foreground shrink-0">--</span>
       </div>
     )
   }
@@ -131,39 +141,23 @@ function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaR
   const tCovert = Math.max(0, result.tCovert)
   const tSanitize = downtimeS
   const tTotal = tSanitize + tReload + tCovert
-  const overflows = tTotal > epochS
 
-  if (overflows) {
-    // Nothing fits — show grayed-out bar with infinity
-    const sanitizePct = (tSanitize / tTotal) * 100
-    const downloadPct = (tReload / tTotal) * 100
-    const operationalPct = (tCovert / tTotal) * 100
-    return (
-      <div className="flex items-center gap-2 text-sm">
-        <span className="w-20 text-right text-red-600 shrink-0">—</span>
-        <div className="flex-1 h-5 bg-muted rounded overflow-hidden flex opacity-40">
-          <div className="h-full bg-emerald-400 transition-all" style={{ width: `${sanitizePct}%` }} />
-          <div className="h-full bg-amber-400 transition-all" style={{ width: `${downloadPct}%` }} />
-          <div className="h-full bg-blue-300 transition-all" style={{ width: `${operationalPct}%` }} />
-        </div>
-        <span className="w-16 text-right text-red-600 shrink-0">No fit</span>
-      </div>
-    )
-  }
-
-  const sanitizeFrac = tSanitize / epochS
-  const downloadFrac = tReload / epochS
-  const operationalFrac = tCovert / epochS
+  // When overflows, show proportions of total time needed (exceeds epoch)
+  const denom = overflows ? tTotal : epochS
+  const sanitizeFrac = denom > 0 ? tSanitize / denom : 0
+  const downloadFrac = denom > 0 ? tReload / denom : 0
+  const operationalFrac = denom > 0 ? tCovert / denom : 0
 
   return (
     <div className="flex items-center gap-2 text-sm">
-      <span className="w-20 text-right text-muted-foreground shrink-0">{fmtGamma(result.gammaDuty)}</span>
-      <div className="flex-1 h-5 bg-muted rounded overflow-hidden flex">
+      <span className="w-20 text-right text-muted-foreground shrink-0">Time</span>
+      <div className="relative flex-1 h-5 bg-muted rounded overflow-hidden flex">
         <div className="h-full bg-emerald-400 transition-all" style={{ width: `${sanitizeFrac * 100}%` }} />
-        <div className="h-full bg-amber-400 transition-all" style={{ width: `${downloadFrac * 100}%` }} />
-        <div className="h-full bg-blue-300 transition-all" style={{ width: `${operationalFrac * 100}%` }} />
+        <div className="h-full bg-pink-300 transition-all" style={{ width: `${downloadFrac * 100}%` }} />
+        <div className="h-full bg-red-400 transition-all" style={{ width: `${operationalFrac * 100}%` }} />
+        {overflows && <OverflowStripes />}
       </div>
-      <span className="w-16 text-right text-muted-foreground shrink-0">{operationalFrac > 0 ? `${(operationalFrac * 100).toFixed(0)}%` : "0%"}</span>
+      <span className="w-16 text-right font-mono shrink-0">{fmtGamma(result.gammaDuty)}</span>
     </div>
   )
 }
@@ -172,18 +166,28 @@ function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaR
 // Memory fit bar
 // ---------------------------------------------------------------------------
 
-function MemoryFitBar({ result, totalHbm, honestMem, covertState }: { result: GammaResult; totalHbm: number; honestMem: number; covertState: number }) {
+function MemoryFitBar({ result, totalHbm, honestMem, covertState, disabled }: { result: GammaResult; totalHbm: number; honestMem: number; covertState: number; disabled?: boolean }) {
   const covertFrac = Math.min(covertState / totalHbm, 1)
   const honestFrac = Math.min(honestMem / totalHbm, 1 - covertFrac)
   const overflows = result.fitMarginBytes < 0
 
+  if (disabled) {
+    return (
+      <div className="flex items-center gap-2 text-sm">
+        <span className="w-20 text-right text-muted-foreground shrink-0">Memory</span>
+        <div className="flex-1 h-5 bg-muted rounded overflow-hidden opacity-50" />
+        <span className="w-16 text-right shrink-0 text-muted-foreground">{fmtBytes(totalHbm)}</span>
+      </div>
+    )
+  }
+
   return (
     <div className="flex items-center gap-2 text-sm">
-      <span className={`w-20 text-right shrink-0 ${overflows ? "text-red-600" : "text-muted-foreground"}`}>{overflows ? "No fit" : "Fits"}</span>
-      <div className="flex-1 h-5 bg-muted rounded overflow-hidden">
+      <span className="w-20 text-right text-muted-foreground shrink-0">Memory</span>
+      <div className="relative flex-1 h-5 bg-muted rounded overflow-hidden">
         <div className="h-full flex">
           <div
-            className={`h-full transition-all ${overflows ? "bg-red-400" : "bg-amber-400"}`}
+            className="h-full bg-red-400 transition-all"
             style={{ width: `${covertFrac * 100}%` }}
             title={`Covert: ${fmtBytes(covertState)}`}
           />
@@ -193,8 +197,9 @@ function MemoryFitBar({ result, totalHbm, honestMem, covertState }: { result: Ga
             title={`Honest: ${fmtBytes(honestMem)}`}
           />
         </div>
+        {overflows && <OverflowStripes />}
       </div>
-      <span className={`w-16 text-right shrink-0 ${overflows ? "text-red-600" : "text-muted-foreground"}`}>{fmtBytes(totalHbm)}</span>
+      <span className="w-16 text-right shrink-0 text-muted-foreground">{fmtBytes(totalHbm)}</span>
     </div>
   )
 }
@@ -514,6 +519,9 @@ export function GammaDashboard() {
     [scenario],
   )
 
+  const memoryOverflow = result.fitMarginBytes < 0
+  const dutyOverflow = sanitization && !Number.isFinite(result.gammaDuty)
+
   const opMax = Math.max(result.gammaCompute, result.gammaIngress, result.gammaEgress, 10)
   const opBottleneck: "compute" | "ingress" | "egress" = result.gammaCompute >= result.gammaIngress && result.gammaCompute >= result.gammaEgress
     ? "compute"
@@ -574,24 +582,24 @@ export function GammaDashboard() {
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Operational overhead</span>
                 <span className="flex items-center gap-3">
-                  <LegendDot color="bg-foreground/25" label="Non-bottleneck" />
-                  <LegendDot color="bg-red-500" label="Bottleneck" />
+                  <LegendDot color="bg-foreground/35" label="Non-bottleneck" />
+                  <LegendDot color="bg-foreground/80" label="Bottleneck" />
                 </span>
               </div>
               <div className="space-y-1.5">
-                <OpBar label="Compute" value={result.gammaCompute} max={opMax} isBottleneck={opBottleneck === "compute"} disabled={result.fitMarginBytes < 0} />
-                <OpBar label="Ingress" value={result.gammaIngress} max={opMax} isBottleneck={opBottleneck === "ingress"} disabled={result.fitMarginBytes < 0} />
-                <OpBar label="Egress" value={result.gammaEgress} max={opMax} isBottleneck={opBottleneck === "egress"} disabled={result.fitMarginBytes < 0} />
+                <OpBar label="Compute" value={result.gammaCompute} max={opMax} isBottleneck={opBottleneck === "compute"} disabled={memoryOverflow || dutyOverflow} />
+                <OpBar label="Ingress" value={result.gammaIngress} max={opMax} isBottleneck={opBottleneck === "ingress"} disabled={memoryOverflow || dutyOverflow} />
+                <OpBar label="Egress" value={result.gammaEgress} max={opMax} isBottleneck={opBottleneck === "egress"} disabled={memoryOverflow || dutyOverflow} />
               </div>
             </div>
 
             {/* --- Layer 2: Memory fit --- */}
             <div className="mb-5">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory fit</span>
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory utilization</span>
                 <span className="flex items-center gap-3">
-                  <LegendDot color="bg-amber-400" label="Covert" />
-                  <LegendDot color="bg-blue-300" label="Honest" />
+                  <LegendDot color="bg-red-400" label="Covert state" />
+                  <LegendDot color="bg-blue-300" label="Honest state" />
                 </span>
               </div>
               <MemoryFitBar
@@ -599,21 +607,22 @@ export function GammaDashboard() {
                 totalHbm={hbmBytes}
                 honestMem={scenario.honest.claimedMemoryBytes}
                 covertState={covert.stateBytes}
+                disabled={dutyOverflow}
               />
             </div>
 
-            {/* --- Layer 3: Sanitization cycle --- */}
+            {/* --- Layer 3: Sanitization epoch --- */}
             {sanitization && (
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sanitization cycle</span>
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sanitization epoch</span>
                   <span className="flex items-center gap-3">
                     <LegendDot color="bg-emerald-400" label="Sanitization" />
-                    <LegendDot color="bg-amber-400" label="Covert download" />
-                    <LegendDot color="bg-blue-300" label="Operational" />
+                    <LegendDot color="bg-pink-300" label="Covert download" />
+                    <LegendDot color="bg-red-400" label="Covert work" />
                   </span>
                 </div>
-                <EpochTimeline result={result} epochS={epochS} downtimeS={downtimeS} disabled={result.fitMarginBytes < 0} />
+                <EpochTimeline result={result} epochS={epochS} downtimeS={downtimeS} disabled={memoryOverflow} overflows={!!dutyOverflow} />
               </div>
             )}
 

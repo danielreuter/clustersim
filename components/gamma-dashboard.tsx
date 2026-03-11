@@ -319,8 +319,8 @@ function LinearSlider({ label, tooltip, value, onValueChange, min, max, step, fo
 // ---------------------------------------------------------------------------
 
 // GPU options for hardware preset
-const GPU_KEYS = ["H100", "H200", "A100", "H20", "B200"]
-const GPU_COUNTS = [1, 2, 4, 8, 16, 32, 64, 72]
+const GPU_KEYS = ["H100", "H200", "A100", "H20", "B200", "Rubin"]
+const GPU_COUNTS = [1, 2, 4, 8, 16, 32, 64, 72, 128, 256, 512, 1024]
 
 // Default hardware: 8xH100
 const DEFAULT_HW = computeHardwarePreset("H100", 8)

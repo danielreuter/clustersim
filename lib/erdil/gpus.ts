@@ -386,6 +386,23 @@ export const B200 = new GPU({
   memoryBwdUtilizationCap: 0.75,
 });
 
+export const Rubin = new GPU({
+  name: "Rubin",
+  flopPerSecond: { 4: 40e15, 8: 20e15, 16: 10e15 },
+  hbmBandwidthBps: 12e12,
+  hbmSizeBytes: 288e9,
+  l2CacheSizeBytes: 1e8,
+  l2BandwidthBps: 3e13,
+  intranodeAllreduceBandwidthBps: 3.6e12 / 4,
+  internodeAllreduceBandwidthBps: 1e11 / 2,
+  nodeSize: 72,
+  priceDollarsPerHour: 3 * ((3.15 * 2) / 3),
+  kernelLaunchLatencySeconds: 4e-6,
+  collectiveTimeSeconds: meanCollectiveTimeNcclSeconds,
+  arithmeticUtilizationCap: 0.7,
+  memoryBwdUtilizationCap: 0.75,
+});
+
 /** Lookup map for UI selectors. */
 export const GPU_MAP: Record<string, GPU> = {
   H100,
@@ -393,4 +410,5 @@ export const GPU_MAP: Record<string, GPU> = {
   A100,
   H20,
   B200,
+  Rubin,
 };

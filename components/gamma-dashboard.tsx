@@ -2,7 +2,6 @@
 
 import { useState, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -14,8 +13,6 @@ import {
 } from "@/components/ui/select"
 import {
   simulateDirect,
-  sweepDirect,
-  logRange,
   computeHardwarePreset,
   computeCovertPreset,
   HARDWARE_PRESETS,
@@ -24,7 +21,6 @@ import {
   type DirectScenario,
   type CovertWorkloadV1,
   type GammaResult,
-  type SweepPoint,
 } from "@/lib/sim"
 
 // ---------------------------------------------------------------------------
@@ -175,56 +171,6 @@ function MemoryFitBar({ result, totalHbm, honestMem, covertState }: { result: Ga
       </div>
       <span className={`w-16 text-right shrink-0 ${overflows ? "text-red-600" : "text-muted-foreground"}`}>{fmtBytes(totalHbm)}</span>
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Sweep chart
-// ---------------------------------------------------------------------------
-
-function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; paramLabel: string; xFormatter?: (v: number) => string }) {
-  const W = 400
-  const H = 120
-  const PAD = { top: 10, right: 10, bottom: 24, left: 50 }
-  const w = W - PAD.left - PAD.right
-  const h = H - PAD.top - PAD.bottom
-
-  const finitePoints = points.filter((p) => Number.isFinite(p.result.gamma))
-  if (finitePoints.length < 2) {
-    return <div className="text-sm text-muted-foreground italic">All values are ∞ (sanitization dominates)</div>
-  }
-
-  const xMin = Math.log10(finitePoints[0].value)
-  const xMax = Math.log10(finitePoints[finitePoints.length - 1].value)
-  const yMax = Math.log10(Math.max(...finitePoints.map((p) => p.result.gamma), 10))
-  const yMin = 0
-
-  const toX = (v: number) => PAD.left + ((Math.log10(v) - xMin) / (xMax - xMin)) * w
-  const toY = (g: number) => PAD.top + h - ((Math.log10(Math.max(1, g)) - yMin) / (yMax - yMin)) * h
-
-  const path = finitePoints.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.value).toFixed(1)},${toY(p.result.gamma).toFixed(1)}`).join(" ")
-
-  const fmtX = xFormatter ?? fmtBw
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-md">
-      <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={PAD.top + h} stroke="currentColor" strokeOpacity={0.2} />
-      <line x1={PAD.left} y1={PAD.top + h} x2={PAD.left + w} y2={PAD.top + h} stroke="currentColor" strokeOpacity={0.2} />
-      <line x1={PAD.left} y1={toY(1)} x2={PAD.left + w} y2={toY(1)} stroke="currentColor" strokeOpacity={0.1} strokeDasharray="4 2" />
-      <text x={PAD.left - 4} y={toY(1) + 3} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>1×</text>
-      <text x={PAD.left - 4} y={PAD.top + 8} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>{fmtGamma(10 ** yMax)}</text>
-      <text x={PAD.left} y={H - 2} fontSize={9} fill="currentColor" opacity={0.4}>{fmtX(finitePoints[0].value)}</text>
-      <text x={PAD.left + w} y={H - 2} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>{fmtX(finitePoints[finitePoints.length - 1].value)}</text>
-      <text x={PAD.left + w / 2} y={H - 2} textAnchor="middle" fontSize={9} fill="currentColor" opacity={0.5}>{paramLabel}</text>
-      <path d={path} fill="none" stroke="var(--primary)" strokeWidth={2} />
-      {finitePoints.map((p, i) => {
-        const prev = i > 0 ? finitePoints[i - 1] : null
-        if (prev && prev.result.dominant !== p.result.dominant) {
-          return <circle key={i} cx={toX(p.value)} cy={toY(p.result.gamma)} r={3} fill="var(--destructive)" />
-        }
-        return null
-      })}
-    </svg>
   )
 }
 
@@ -406,37 +352,6 @@ export function GammaDashboard() {
     setTimeout(() => setLinkCopied(false), 2000)
   }
 
-  // Sweep: b_out
-  const bOutSweep = useMemo(
-    () => logRange(1, 10, 60).map((v) => ({
-      value: v,
-      result: simulateDirect({ ...scenario, verifier: { ...scenario.verifier, covertEgressBps: v } }),
-    })),
-    [scenario],
-  )
-
-  // Sweep: proven compute share
-  const computeSweep = useMemo(
-    () => logRange(-2, Math.log10(0.99), 50).map((v) => ({
-      value: v,
-      result: simulateDirect({
-        ...scenario,
-        honest: { ...scenario.honest, claimedComputeFlops: v * computeFlops },
-        verifier: { ...scenario.verifier, alpha: 1 },
-      }),
-    })),
-    [scenario, computeFlops],
-  )
-
-  // Sweep: covert state (n)
-  const nSweep = useMemo(
-    () => logRange(6, 13, 60).map((v) => ({
-      value: v,
-      result: simulateDirect({ ...scenario, covert: { ...scenario.covert, stateBytes: v } }),
-    })),
-    [scenario],
-  )
-
   const opMax = Math.max(result.gammaCompute, result.gammaIngress, result.gammaEgress, 10)
   const opBottleneck: "compute" | "ingress" | "egress" = result.gammaCompute >= result.gammaIngress && result.gammaCompute >= result.gammaEgress
     ? "compute"
@@ -565,10 +480,10 @@ export function GammaDashboard() {
 
         {/* === Controls === */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {/* Hardware + Covert workload */}
+          {/* LEFT: Workload Configuration */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">Configuration</CardTitle>
+              <CardTitle className="text-sm font-semibold">Workload</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               {/* Hardware section */}
@@ -703,154 +618,124 @@ export function GammaDashboard() {
                     />
                   </div>
                 </div>
-                <div className="text-xs text-muted-foreground pt-1">
-                  {"Proven compute: α \u00D7 f*/\u011C = "}{((alpha / 100) * computeFrac).toFixed(1)}{"% of \u011C"}
-                </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Verification */}
+          {/* RIGHT: Security Properties */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">Verification Parameters</CardTitle>
+              <CardTitle className="text-sm font-semibold">Security Properties</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Network Transparency */}
               <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Covert egress (b_out)</Label>
-                  <span className="text-xs font-mono">{fmtBw(10 ** bOutExp)}</span>
-                </div>
-                <Slider
-                  value={[bOutExp]}
-                  onValueChange={([v]) => setBOutExp(v)}
-                  min={1} max={10} step={0.1}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Covert ingress (b_in)</Label>
-                  <span className="text-xs font-mono">{fmtBw(10 ** bInExp)}</span>
-                </div>
-                <Slider
-                  value={[bInExp]}
-                  onValueChange={([v]) => setBInExp(v)}
-                  min={1} max={10} step={0.1}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Matmul transparency (α)</Label>
-                  <span className="text-xs font-mono">{alpha}%</span>
-                </div>
-                <Slider
-                  value={[alpha]}
-                  onValueChange={([v]) => setAlpha(v)}
-                  min={0} max={100} step={1}
-                  className="mt-1"
-                />
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setSanitization(!sanitization)}
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${sanitization ? "bg-primary" : "bg-muted"}`}
-                >
-                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${sanitization ? "translate-x-4" : "translate-x-0"}`} />
-                </button>
-                <Label className="text-xs text-muted-foreground">Memory sanitization</Label>
-              </div>
-              {sanitization && (
-                <>
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Network Transparency</span>
+                <div className="space-y-3 mt-2">
                   <div>
                     <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Epoch length (τ)</Label>
-                      <span className="text-xs font-mono">{fmtTime(epochS)}</span>
+                      <Label className="text-xs text-muted-foreground">Covert egress (b_out)</Label>
+                      <span className="text-xs font-mono">{fmtBw(10 ** bOutExp)}</span>
                     </div>
                     <Slider
-                      value={[epochSExp]}
-                      onValueChange={([v]) => setEpochSExp(v)}
-                      min={-1} max={6} step={0.05}
+                      value={[bOutExp]}
+                      onValueChange={([v]) => setBOutExp(v)}
+                      min={1} max={10} step={0.1}
                       className="mt-1"
                     />
                   </div>
                   <div>
                     <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Downtime per epoch (T)</Label>
-                      <span className="text-xs font-mono">{downtimeS}s</span>
+                      <Label className="text-xs text-muted-foreground">Covert ingress (b_in)</Label>
+                      <span className="text-xs font-mono">{fmtBw(10 ** bInExp)}</span>
                     </div>
                     <Slider
-                      value={[downtimeS]}
-                      onValueChange={([v]) => setDowntimeS(v)}
-                      min={0.01} max={10} step={0.01}
+                      value={[bInExp]}
+                      onValueChange={([v]) => setBInExp(v)}
+                      min={1} max={10} step={0.1}
                       className="mt-1"
                     />
                   </div>
+                </div>
+              </div>
+
+              {/* Proof of Work */}
+              <div className="pt-3 border-t">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Proof of Work</span>
+                <div className="space-y-3 mt-2">
                   <div>
                     <div className="flex justify-between">
-                      <Label className="text-xs text-muted-foreground">Covert persistence capacity (C)</Label>
-                      <span className="text-xs font-mono">{survivingGB} GB</span>
+                      <Label className="text-xs text-muted-foreground">Effectiveness (α)</Label>
+                      <span className="text-xs font-mono">{alpha}%</span>
                     </div>
                     <Slider
-                      value={[survivingGB]}
-                      onValueChange={([v]) => setSurvivingGB(v)}
-                      min={0} max={200} step={1}
+                      value={[alpha]}
+                      onValueChange={([v]) => setAlpha(v)}
+                      min={0} max={100} step={1}
                       className="mt-1"
                     />
                   </div>
-                </>
-              )}
+                </div>
+              </div>
+
+              {/* Memory Sanitization */}
+              <div className="pt-3 border-t">
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Memory Sanitization</span>
+                  <div className="ml-auto">
+                    <button
+                      onClick={() => setSanitization(!sanitization)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${sanitization ? "bg-primary" : "bg-muted"}`}
+                    >
+                      <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${sanitization ? "translate-x-4" : "translate-x-0"}`} />
+                    </button>
+                  </div>
+                </div>
+                {sanitization && (
+                  <div className="space-y-3">
+                    <div>
+                      <div className="flex justify-between">
+                        <Label className="text-xs text-muted-foreground">Epoch length (τ)</Label>
+                        <span className="text-xs font-mono">{fmtTime(epochS)}</span>
+                      </div>
+                      <Slider
+                        value={[epochSExp]}
+                        onValueChange={([v]) => setEpochSExp(v)}
+                        min={-1} max={6} step={0.05}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex justify-between">
+                        <Label className="text-xs text-muted-foreground">Downtime per epoch (T)</Label>
+                        <span className="text-xs font-mono">{downtimeS}s</span>
+                      </div>
+                      <Slider
+                        value={[downtimeS]}
+                        onValueChange={([v]) => setDowntimeS(v)}
+                        min={0.01} max={10} step={0.01}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex justify-between">
+                        <Label className="text-xs text-muted-foreground">Covert persistence capacity (C)</Label>
+                        <span className="text-xs font-mono">{survivingGB} GB</span>
+                      </div>
+                      <Slider
+                        value={[survivingGB]}
+                        onValueChange={([v]) => setSurvivingGB(v)}
+                        min={0} max={200} step={1}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* === Sweeps === */}
-        <Tabs defaultValue="egress">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="egress">Egress Sweep</TabsTrigger>
-            <TabsTrigger value="compute">Compute Sweep</TabsTrigger>
-            <TabsTrigger value="state">Covert State Sweep</TabsTrigger>
-          </TabsList>
-          <TabsContent value="egress" className="mt-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold">Γ vs Covert Egress Bandwidth</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SweepChart points={bOutSweep} paramLabel="b_out" />
-              </CardContent>
-            </Card>
-          </TabsContent>
-          <TabsContent value="compute" className="mt-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold">Γ vs Honest Compute (f*/Ĝ, with α=1)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SweepChart
-                  points={computeSweep}
-                  paramLabel="f*/Ĝ"
-                  xFormatter={(v) => `${(v * 100).toFixed(0)}%`}
-                />
-              </CardContent>
-            </Card>
-          </TabsContent>
-          <TabsContent value="state" className="mt-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold">Γ vs Covert State (n)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SweepChart
-                  points={nSweep}
-                  paramLabel="Covert state (n)"
-                  xFormatter={fmtBytes}
-                />
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
       </div>
     </div>
   )

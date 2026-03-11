@@ -1,9 +1,20 @@
 // All units: FLOP/s, bytes, bytes/s, seconds
 
+import type { GPU } from "@/lib/erdil/gpus"
+
 export type Hardware = {
   name: string
-  computeFlops: number   // Ĝ  — system peak FLOP/s
-  hbmBytes: number       // M̂  — system HBM capacity in bytes
+  gpuKey: string
+  nGpu: number
+}
+
+/** Hardware with compute/memory derived from GPU specs + model precision */
+export type ResolvedHardware = {
+  name: string
+  gpu: GPU
+  nGpu: number
+  computeFlops: number   // Ĝ  — nGpu × gpu FLOP/s at model precision
+  hbmBytes: number       // M̂  — nGpu × gpu HBM capacity
 }
 
 export type HonestLoad = {
@@ -21,7 +32,7 @@ export type Verifier = {
   sanitizationEnabled: boolean
 }
 
-// v1 workload: abstract, user-specified parameters
+// Internal workload type used by composeGamma (constructed by roofline backends)
 export type CovertWorkloadV1 = {
   label: string
   kind: "inference" | "training"
@@ -33,19 +44,17 @@ export type CovertWorkloadV1 = {
   egressBytesPerUnit: number    // d_out
 }
 
-// v2 inference: model-based, batch-optimized via roofline
+// Model-based inference workload
 export type CovertWorkloadInference = {
   label: string
   kind: "inference"
   unit: "token"
   backend: "roofline-lite"
   modelKey: string
-  gpuKey: string
-  nGpu: number
   contextLength: number
 }
 
-// v2 training: sync-aware
+// Model-based training workload
 export type TrainingSyncPolicy =
   | { mode: "none" }
   | { mode: "checkpoint"; bytesOutPerSync: number; tokensPerSync: number }
@@ -57,12 +66,9 @@ export type CovertWorkloadTraining = {
   unit: "train-token"
   backend: "roofline-lite"
   modelKey: string
-  gpuKey: string
-  nGpu: number
   syncPolicy: TrainingSyncPolicy
 }
 
-// Union — v1 objects lack `backend` field
 export type CovertWorkload = CovertWorkloadV1 | CovertWorkloadInference | CovertWorkloadTraining
 
 export function isV2Workload(w: CovertWorkload): w is CovertWorkloadInference | CovertWorkloadTraining {
@@ -102,7 +108,6 @@ export type GammaResult = {
     nPersistBytes: number
     workspaceBytes: number
   }
-  gammaV1?: number
 }
 
 export type SimulationSnapshot = {

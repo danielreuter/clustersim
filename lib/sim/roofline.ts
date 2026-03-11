@@ -1,6 +1,6 @@
 import { Model, MODEL_MAP } from "@/lib/erdil/models"
 import { GPU, GPU_MAP } from "@/lib/erdil/gpus"
-import type { ThroughputEstimate, TrainingSyncPolicy } from "./types"
+import type { Hardware, ResolvedHardware, ThroughputEstimate, TrainingSyncPolicy } from "./types"
 
 export type RooflineResult = {
   throughput: ThroughputEstimate
@@ -165,6 +165,26 @@ export function resolveGpu(key: string): GPU {
   const g = GPU_MAP[key]
   if (!g) throw new Error(`Unknown GPU: ${key}`)
   return g
+}
+
+/**
+ * Resolve hardware specs from GPU key + count + model precision.
+ * Maps weightPrecisionBytes → GPU FLOP/s key (0.5→4, 1→8, 2→16).
+ */
+export function resolveHardware(hw: Hardware, precisionBytes: number): ResolvedHardware {
+  const gpu = resolveGpu(hw.gpuKey)
+  const precisionKey = precisionBytes * 8 // bytes → bits (0.5→4, 1→8, 2→16)
+  const keys = Object.keys(gpu.flopPerSecond).map(Number).sort((a, b) => a - b)
+  // Pick exact match, or fall back to nearest available precision
+  const flopsPerGpu = gpu.flopPerSecond[precisionKey]
+    ?? gpu.flopPerSecond[keys[keys.length - 1]]
+  return {
+    name: hw.name,
+    gpu,
+    nGpu: hw.nGpu,
+    computeFlops: hw.nGpu * flopsPerGpu,
+    hbmBytes: hw.nGpu * gpu.hbmSizeBytes,
+  }
 }
 
 export { MODEL_MAP, GPU_MAP }

@@ -1,5 +1,6 @@
 export type {
   Hardware,
+  ResolvedHardware,
   HonestLoad,
   Verifier,
   CovertWorkload,
@@ -32,12 +33,12 @@ export {
   deriveSyncIO,
   resolveModel,
   resolveGpu,
+  resolveHardware,
 } from "./roofline"
 export type { RooflineResult } from "./roofline"
 
 export {
   HARDWARE,
-  WORKLOADS,
   WORKLOADS_V2,
   WORKLOADS_V2_INFERENCE,
   WORKLOADS_V2_TRAINING,

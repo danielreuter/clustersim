@@ -15,11 +15,13 @@ import {
 import {
   simulate,
   logRange,
+  resolveHardware,
   HARDWARE,
   WORKLOADS_V2,
   MODEL_MAP,
   GPU_MAP,
   honestLoadFromFractions,
+  type Hardware,
   type Scenario,
   type GammaResult,
   type SweepPoint,
@@ -72,22 +74,6 @@ function fmtTime(s: number): string {
   return `${s.toFixed(2)}s`
 }
 
-const DOMINANT_LABELS: Record<string, string> = {
-  "memory-fit": "Memory (doesn't fit)",
-  duty: "Sanitization (reload time)",
-  compute: "Compute",
-  ingress: "Ingress bandwidth",
-  egress: "Egress bandwidth",
-}
-
-const DOMINANT_COLORS: Record<string, string> = {
-  "memory-fit": "text-red-600",
-  duty: "text-purple-600",
-  compute: "text-blue-600",
-  ingress: "text-amber-600",
-  egress: "text-orange-600",
-}
-
 const REGIME_LABELS: Record<string, string> = {
   compute: "Compute-bound",
   "memory-bandwidth": "Memory BW-bound",
@@ -102,10 +88,6 @@ const REGIME_COLORS: Record<string, string> = {
   "memory-bandwidth": "bg-amber-100 text-amber-800",
   "under-batched": "bg-red-100 text-red-800",
 }
-
-// ---------------------------------------------------------------------------
-// Operational overhead bar — red if it's the bottleneck
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Inline legend dot
@@ -147,7 +129,7 @@ function OpBar({ label, value, max, isBottleneck, disabled }: { label: string; v
 }
 
 // ---------------------------------------------------------------------------
-// Epoch timeline — three-segment bar: download | operational | sanitization
+// Epoch timeline
 // ---------------------------------------------------------------------------
 
 function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaResult; epochS: number; downtimeS: number; disabled?: boolean }) {
@@ -167,7 +149,6 @@ function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaR
   const tCovert = Math.max(0, result.tCovert)
   const tSanitize = downtimeS
 
-  // Fractions of the full epoch
   const downloadFrac = Math.min(tReload / epochS, 1)
   const operationalFrac = Math.min(tCovert / epochS, 1 - downloadFrac)
   const sanitizeFrac = Math.min(tSanitize / epochS, 1 - downloadFrac - operationalFrac)
@@ -186,7 +167,7 @@ function EpochTimeline({ result, epochS, downtimeS, disabled }: { result: GammaR
 }
 
 // ---------------------------------------------------------------------------
-// Memory fit bar — covert + honest vs total HBM
+// Memory fit bar
 // ---------------------------------------------------------------------------
 
 function MemoryFitBar({ result, totalHbm, honestMem, covertState }: { result: GammaResult; totalHbm: number; honestMem: number; covertState: number }) {
@@ -217,7 +198,7 @@ function MemoryFitBar({ result, totalHbm, honestMem, covertState }: { result: Ga
 }
 
 // ---------------------------------------------------------------------------
-// Sparkline SVG for sweep
+// Sweep chart
 // ---------------------------------------------------------------------------
 
 function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; paramLabel: string; xFormatter?: (v: number) => string }) {
@@ -246,21 +227,15 @@ function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; 
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-md">
-      {/* axes */}
       <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={PAD.top + h} stroke="currentColor" strokeOpacity={0.2} />
       <line x1={PAD.left} y1={PAD.top + h} x2={PAD.left + w} y2={PAD.top + h} stroke="currentColor" strokeOpacity={0.2} />
-      {/* 1× line */}
       <line x1={PAD.left} y1={toY(1)} x2={PAD.left + w} y2={toY(1)} stroke="currentColor" strokeOpacity={0.1} strokeDasharray="4 2" />
       <text x={PAD.left - 4} y={toY(1) + 3} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>1×</text>
-      {/* top label */}
       <text x={PAD.left - 4} y={PAD.top + 8} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>{fmtGamma(10 ** yMax)}</text>
-      {/* x labels */}
       <text x={PAD.left} y={H - 2} fontSize={9} fill="currentColor" opacity={0.4}>{fmtX(finitePoints[0].value)}</text>
       <text x={PAD.left + w} y={H - 2} textAnchor="end" fontSize={9} fill="currentColor" opacity={0.4}>{fmtX(finitePoints[finitePoints.length - 1].value)}</text>
       <text x={PAD.left + w / 2} y={H - 2} textAnchor="middle" fontSize={9} fill="currentColor" opacity={0.5}>{paramLabel}</text>
-      {/* line */}
       <path d={path} fill="none" stroke="var(--primary)" strokeWidth={2} />
-      {/* dots for dominant transitions */}
       {finitePoints.map((p, i) => {
         const prev = i > 0 ? finitePoints[i - 1] : null
         if (prev && prev.result.dominant !== p.result.dominant) {
@@ -273,7 +248,7 @@ function SweepChart({ points, paramLabel, xFormatter }: { points: SweepPoint[]; 
 }
 
 // ---------------------------------------------------------------------------
-// Context length sweep for v2
+// Context length sweep
 // ---------------------------------------------------------------------------
 
 function useContextSweep(scenario: Scenario) {
@@ -296,33 +271,50 @@ function useContextSweep(scenario: Scenario) {
 // Main Dashboard
 // ---------------------------------------------------------------------------
 
+const GPU_COUNTS = [1, 2, 4, 8, 16, 32, 64, 72]
+
 export function GammaDashboard() {
-  const [hwKey, setHwKey] = useState("gb200-nvl72")
+  // Hardware state
+  const [hwKey, setHwKey] = useState(Object.keys(HARDWARE)[0])
+  const [hwCustom, setHwCustom] = useState(false)
+  const [gpuKey, setGpuKey] = useState("H100")
+  const [nGpu, setNGpu] = useState(8)
+
+  // Honest load
   const [computeFrac, setComputeFrac] = useState(50)
   const [memoryFrac, setMemoryFrac] = useState(50)
   const [alpha, setAlpha] = useState(100)
+
+  // Verifier
   const [bOutExp, setBOutExp] = useState(Math.log10(20e3))
   const [bInExp, setBInExp] = useState(Math.log10(100e3))
   const [sanitization, setSanitization] = useState(true)
-  const [epochSExp, setEpochSExp] = useState(Math.log10(5)) // log10(seconds)
+  const [epochSExp, setEpochSExp] = useState(Math.log10(5))
   const epochS = 10 ** epochSExp
   const [downtimeS, setDowntimeS] = useState(0.25)
   const [survivingGB, setSurvivingGB] = useState(17)
 
-  // v2-specific state
-  const [v2WlKey, setV2WlKey] = useState(Object.keys(WORKLOADS_V2)[0])
-  const [v2ModelKey, setV2ModelKey] = useState("Llama 3 70B")
-  const [v2GpuKey, setV2GpuKey] = useState("H100")
-  const [v2NGpu, setV2NGpu] = useState(8)
-  const [v2CtxExp, setV2CtxExp] = useState(11) // 2^11 = 2048
-  const [v2WorkloadKind, setV2WorkloadKind] = useState<"inference" | "training">("inference")
-  const [v2SyncMode, setV2SyncMode] = useState<"none" | "checkpoint" | "periodic-updates">("none")
-  const [v2UsePreset, setV2UsePreset] = useState(true)
+  // Workload state
+  const [wlKey, setWlKey] = useState(Object.keys(WORKLOADS_V2)[0])
+  const [wlCustom, setWlCustom] = useState(false)
+  const [modelKey, setModelKey] = useState("Llama 3 70B")
+  const [ctxExp, setCtxExp] = useState(11) // 2^11 = 2048
+  const [workloadKind, setWorkloadKind] = useState<"inference" | "training">("inference")
+  const [syncMode, setSyncMode] = useState<"none" | "checkpoint" | "periodic-updates">("none")
 
-  const v2ContextLength = Math.round(2 ** v2CtxExp)
+  const contextLength = Math.round(2 ** ctxExp)
+
+  // Derive hardware
+  const hw: Hardware = useMemo(() => {
+    if (hwCustom) return { name: `${nGpu}× ${gpuKey}`, gpuKey, nGpu }
+    return HARDWARE[hwKey]
+  }, [hwCustom, hwKey, gpuKey, nGpu])
+
+  // Resolve hardware for display (use BF16 = 2 bytes as default precision for honest load fractions)
+  // The actual simulation resolves with the model's precision
+  const resolvedHw = useMemo(() => resolveHardware(hw, 2), [hw])
 
   const scenario: Scenario = useMemo(() => {
-    const hw = HARDWARE[hwKey]
     const verifier = {
       alpha: alpha / 100,
       covertIngressBps: 10 ** bInExp,
@@ -334,46 +326,42 @@ export function GammaDashboard() {
     }
 
     let covert: CovertWorkloadInference | CovertWorkloadTraining
-    if (v2UsePreset) {
-      covert = WORKLOADS_V2[v2WlKey]
-    } else if (v2WorkloadKind === "inference") {
+    if (!wlCustom) {
+      covert = WORKLOADS_V2[wlKey]
+    } else if (workloadKind === "inference") {
       covert = {
-        label: `${v2ModelKey} on ${v2NGpu}×${v2GpuKey}`,
+        label: `${modelKey} inference`,
         kind: "inference",
         unit: "token",
         backend: "roofline-lite",
-        modelKey: v2ModelKey,
-        gpuKey: v2GpuKey,
-        nGpu: v2NGpu,
-        contextLength: v2ContextLength,
+        modelKey,
+        contextLength,
       }
     } else {
       const syncPolicy: TrainingSyncPolicy =
-        v2SyncMode === "none"
+        syncMode === "none"
           ? { mode: "none" }
-          : v2SyncMode === "checkpoint"
-            ? { mode: "checkpoint", bytesOutPerSync: MODEL_MAP[v2ModelKey].totalParams * 2, tokensPerSync: 1e6 }
-            : { mode: "periodic-updates", bytesInPerSync: MODEL_MAP[v2ModelKey].totalParams * 2, bytesOutPerSync: MODEL_MAP[v2ModelKey].totalParams * 2, tokensPerSync: 1e6 }
+          : syncMode === "checkpoint"
+            ? { mode: "checkpoint", bytesOutPerSync: MODEL_MAP[modelKey].totalParams * 2, tokensPerSync: 1e6 }
+            : { mode: "periodic-updates", bytesInPerSync: MODEL_MAP[modelKey].totalParams * 2, bytesOutPerSync: MODEL_MAP[modelKey].totalParams * 2, tokensPerSync: 1e6 }
 
       covert = {
-        label: `Train ${v2ModelKey} on ${v2NGpu}×${v2GpuKey}`,
+        label: `Train ${modelKey}`,
         kind: "training",
         unit: "train-token",
         backend: "roofline-lite",
-        modelKey: v2ModelKey,
-        gpuKey: v2GpuKey,
-        nGpu: v2NGpu,
+        modelKey,
         syncPolicy,
       }
     }
 
     return {
       hardware: hw,
-      honest: honestLoadFromFractions(hw, computeFrac / 100, memoryFrac / 100),
+      honest: honestLoadFromFractions(resolvedHw.computeFlops, resolvedHw.hbmBytes, computeFrac / 100, memoryFrac / 100),
       verifier,
       covert,
     }
-  }, [hwKey, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochSExp, downtimeS, survivingGB, v2WlKey, v2ModelKey, v2GpuKey, v2NGpu, v2ContextLength, v2WorkloadKind, v2SyncMode, v2UsePreset])
+  }, [hw, resolvedHw, computeFrac, memoryFrac, alpha, bOutExp, bInExp, sanitization, epochSExp, downtimeS, survivingGB, wlKey, wlCustom, modelKey, contextLength, workloadKind, syncMode])
 
   const result = useMemo(() => simulate(scenario), [scenario])
 
@@ -400,14 +388,14 @@ export function GammaDashboard() {
       value: v,
       result: simulate({
         ...scenario,
-        honest: { ...scenario.honest, claimedComputeFlops: v * scenario.hardware.computeFlops },
+        honest: { ...scenario.honest, claimedComputeFlops: v * resolvedHw.computeFlops },
         verifier: { ...scenario.verifier, alpha: 1 },
       }),
     })),
-    [scenario],
+    [scenario, resolvedHw],
   )
 
-  // Context sweep (v2 inference only)
+  // Context sweep (inference only)
   const ctxSweep = useContextSweep(scenario)
 
   const opMax = Math.max(result.gammaCompute, result.gammaIngress, result.gammaEgress, 10)
@@ -416,8 +404,6 @@ export function GammaDashboard() {
     : result.gammaIngress >= result.gammaEgress
       ? "ingress"
       : "egress"
-
-  const GPU_COUNTS = [1, 2, 4, 8, 16, 32, 64, 72]
 
   return (
     <div className="min-h-screen bg-background">
@@ -489,9 +475,9 @@ export function GammaDashboard() {
               </div>
               <MemoryFitBar
                 result={result}
-                totalHbm={scenario.hardware.hbmBytes}
+                totalHbm={resolvedHw.hbmBytes}
                 honestMem={scenario.honest.claimedMemoryBytes}
-                covertState={result.v2 ? result.v2.nPersistBytes + result.v2.workspaceBytes : ("stateBytes" in scenario.covert ? (scenario.covert as { stateBytes: number }).stateBytes : 0)}
+                covertState={result.v2 ? result.v2.nPersistBytes + result.v2.workspaceBytes : 0}
               />
             </div>
 
@@ -538,140 +524,153 @@ export function GammaDashboard() {
 
         {/* === Controls === */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {/* Presets */}
+          {/* Configuration */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold">Configuration</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div>
-                <Label className="text-xs text-muted-foreground">Hardware</Label>
-                <Select value={hwKey} onValueChange={setHwKey}>
-                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(HARDWARE).map(([k, v]) => (
-                      <SelectItem key={k} value={k}>{v.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Preset vs custom toggle */}
+              {/* Hardware */}
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => setV2UsePreset(!v2UsePreset)}
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${v2UsePreset ? "bg-primary" : "bg-muted"}`}
+                  onClick={() => setHwCustom(!hwCustom)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${hwCustom ? "bg-primary" : "bg-muted"}`}
                 >
-                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${v2UsePreset ? "translate-x-4" : "translate-x-0"}`} />
+                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${hwCustom ? "translate-x-4" : "translate-x-0"}`} />
                 </button>
-                <Label className="text-xs text-muted-foreground">Use preset</Label>
+                <Label className="text-xs text-muted-foreground">Custom hardware</Label>
               </div>
 
-                  {v2UsePreset ? (
+              {hwCustom ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">GPU</Label>
+                    <Select value={gpuKey} onValueChange={setGpuKey}>
+                      <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {Object.keys(GPU_MAP).map((k) => (
+                          <SelectItem key={k} value={k}>{k}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Count</Label>
+                    <Select value={String(nGpu)} onValueChange={(v) => setNGpu(Number(v))}>
+                      <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {GPU_COUNTS.map((n) => (
+                          <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <Label className="text-xs text-muted-foreground">Hardware</Label>
+                  <Select value={hwKey} onValueChange={setHwKey}>
+                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(HARDWARE).map(([k, v]) => (
+                        <SelectItem key={k} value={k}>{v.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="text-xs text-muted-foreground pt-1 border-t">
+                {hw.nGpu}× {hw.gpuKey} — {fmtBytes(resolvedHw.hbmBytes)} HBM, {fmt(resolvedHw.computeFlops)} FLOP/s (BF16)
+              </div>
+
+              {/* Workload */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setWlCustom(!wlCustom)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${wlCustom ? "bg-primary" : "bg-muted"}`}
+                >
+                  <span className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform ${wlCustom ? "translate-x-4" : "translate-x-0"}`} />
+                </button>
+                <Label className="text-xs text-muted-foreground">Custom workload</Label>
+              </div>
+
+              {wlCustom ? (
+                <>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setWorkloadKind("inference")}
+                      className={`px-2 py-1 text-xs rounded ${workloadKind === "inference" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+                    >
+                      Inference
+                    </button>
+                    <button
+                      onClick={() => setWorkloadKind("training")}
+                      className={`px-2 py-1 text-xs rounded ${workloadKind === "training" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+                    >
+                      Training
+                    </button>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Model</Label>
+                    <Select value={modelKey} onValueChange={setModelKey}>
+                      <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {Object.keys(MODEL_MAP).map((k) => (
+                          <SelectItem key={k} value={k}>{k}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {workloadKind === "inference" && (
                     <div>
-                      <Label className="text-xs text-muted-foreground">V2 Workload Preset</Label>
-                      <Select value={v2WlKey} onValueChange={setV2WlKey}>
+                      <div className="flex justify-between">
+                        <Label className="text-xs text-muted-foreground">Context length</Label>
+                        <span className="text-xs font-mono">{contextLength.toLocaleString()}</span>
+                      </div>
+                      <Slider
+                        value={[ctxExp]}
+                        onValueChange={([v]) => setCtxExp(v)}
+                        min={8} max={17} step={0.5}
+                        className="mt-1"
+                      />
+                    </div>
+                  )}
+
+                  {workloadKind === "training" && (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Sync policy</Label>
+                      <Select value={syncMode} onValueChange={(v) => setSyncMode(v as typeof syncMode)}>
                         <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {Object.entries(WORKLOADS_V2).map(([k, v]) => (
-                            <SelectItem key={k} value={k}>{v.label}</SelectItem>
-                          ))}
+                          <SelectItem value="none">No sync</SelectItem>
+                          <SelectItem value="checkpoint">Checkpoint every 1M tokens</SelectItem>
+                          <SelectItem value="periodic-updates">Periodic gradient sync</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
-                  ) : (
-                    <>
-                      {/* Workload kind */}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => setV2WorkloadKind("inference")}
-                          className={`px-2 py-1 text-xs rounded ${v2WorkloadKind === "inference" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-                        >
-                          Inference
-                        </button>
-                        <button
-                          onClick={() => setV2WorkloadKind("training")}
-                          className={`px-2 py-1 text-xs rounded ${v2WorkloadKind === "training" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-                        >
-                          Training
-                        </button>
-                      </div>
-
-                      {/* Model */}
-                      <div>
-                        <Label className="text-xs text-muted-foreground">Model</Label>
-                        <Select value={v2ModelKey} onValueChange={setV2ModelKey}>
-                          <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {Object.keys(MODEL_MAP).map((k) => (
-                              <SelectItem key={k} value={k}>{k}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      {/* GPU */}
-                      <div>
-                        <Label className="text-xs text-muted-foreground">GPU</Label>
-                        <Select value={v2GpuKey} onValueChange={setV2GpuKey}>
-                          <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {Object.keys(GPU_MAP).map((k) => (
-                              <SelectItem key={k} value={k}>{k}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      {/* GPU count */}
-                      <div>
-                        <Label className="text-xs text-muted-foreground">GPU count</Label>
-                        <Select value={String(v2NGpu)} onValueChange={(v) => setV2NGpu(Number(v))}>
-                          <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {GPU_COUNTS.map((n) => (
-                              <SelectItem key={n} value={String(n)}>{n}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      {/* Context length (inference) */}
-                      {v2WorkloadKind === "inference" && (
-                        <div>
-                          <div className="flex justify-between">
-                            <Label className="text-xs text-muted-foreground">Context length</Label>
-                            <span className="text-xs font-mono">{v2ContextLength.toLocaleString()}</span>
-                          </div>
-                          <Slider
-                            value={[v2CtxExp]}
-                            onValueChange={([v]) => setV2CtxExp(v)}
-                            min={8} max={17} step={0.5}
-                            className="mt-1"
-                          />
-                        </div>
-                      )}
-
-                      {/* Sync policy (training) */}
-                      {v2WorkloadKind === "training" && (
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Sync policy</Label>
-                          <Select value={v2SyncMode} onValueChange={(v) => setV2SyncMode(v as typeof v2SyncMode)}>
-                            <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="none">No sync</SelectItem>
-                              <SelectItem value="checkpoint">Checkpoint every 1M tokens</SelectItem>
-                              <SelectItem value="periodic-updates">Periodic gradient sync</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
-                    </>
                   )}
+                </>
+              ) : (
+                <div>
+                  <Label className="text-xs text-muted-foreground">Covert Workload</Label>
+                  <Select value={wlKey} onValueChange={setWlKey}>
+                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(WORKLOADS_V2).map(([k, v]) => (
+                        <SelectItem key={k} value={k}>{v.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
+              {/* Honest load */}
               <div>
                 <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Honest compute (f*/Ĝ)</Label>
+                  <Label className="text-xs text-muted-foreground">Honest compute utilization (f*/Ĝ)</Label>
                   <span className="text-xs font-mono">{computeFrac}%</span>
                 </div>
                 <Slider
@@ -683,7 +682,7 @@ export function GammaDashboard() {
               </div>
               <div>
                 <div className="flex justify-between">
-                  <Label className="text-xs text-muted-foreground">Honest memory (m*/M̂)</Label>
+                  <Label className="text-xs text-muted-foreground">Honest memory utilization (m*/M̂)</Label>
                   <span className="text-xs font-mono">{memoryFrac}%</span>
                 </div>
                 <Slider

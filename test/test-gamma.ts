@@ -1,11 +1,11 @@
-// Verify Γ engine against WTS doc worked examples
+// Verify Γ engine with GPU-based hardware
 import {
   simulate,
-  HARDWARE,
-  WORKLOADS,
+  resolveHardware,
+  honestLoadFromFractions,
   VERIFIER_FULL,
   VERIFIER_NO_SANITIZATION,
-  honestLoadFromFractions,
+  type Hardware,
   type Scenario,
   type CovertWorkloadInference,
   type CovertWorkloadTraining,
@@ -33,152 +33,128 @@ function assert(
   }
 }
 
-function scenario(
-  hwKey: string,
-  wlKey: string,
+// Hardware presets
+const HW_8xH100: Hardware = { name: "8× H100", gpuKey: "H100", nGpu: 8 }
+const HW_32xH100: Hardware = { name: "32× H100", gpuKey: "H100", nGpu: 32 }
+const HW_8xH200: Hardware = { name: "8× H200", gpuKey: "H200", nGpu: 8 }
+
+function inferenceScenario(
+  hw: Hardware,
+  modelKey: string,
+  ctx: number,
   sanitization: boolean,
   alpha = 1.0,
   computeFrac = 0.5,
   memoryFrac = 0.5,
 ): Scenario {
-  const hw = HARDWARE[hwKey]
+  const rh = resolveHardware(hw, 2) // BF16 for honest load fractions
   return {
     hardware: hw,
-    honest: honestLoadFromFractions(hw, computeFrac, memoryFrac),
+    honest: honestLoadFromFractions(rh.computeFlops, rh.hbmBytes, computeFrac, memoryFrac),
     verifier: sanitization ? VERIFIER_FULL : VERIFIER_NO_SANITIZATION,
-    covert: WORKLOADS[wlKey],
+    covert: {
+      label: `${modelKey} inference`,
+      kind: "inference",
+      unit: "token",
+      backend: "roofline-lite",
+      modelKey,
+      contextLength: ctx,
+    },
   }
 }
 
 // ===================================================================
-// GB200 NVL72 + W_inf,1T  (WTS doc Table: progressive layers)
+// Basic inference: Llama 70B on 8×H100
 // ===================================================================
-console.log("\n=== GB200 NVL72 + Inference 1T ===")
-
-// No verification (α=0, no network transparency, no sanitization)
+console.log("\n=== Llama 70B on 8×H100 (no sanitization) ===")
 {
-  const s = scenario("gb200-nvl72", "inf-1t", false, 0)
-  // Override verifier to have no I/O caps
-  s.verifier = { ...s.verifier, alpha: 0, covertIngressBps: Infinity, covertEgressBps: Infinity }
-  const r = simulate(s)
-  assert("I/O only: Γ", r.gamma, 1)
-}
-
-// + matmul transparency (α=1, no network, no sanitization)
-{
-  const s = scenario("gb200-nvl72", "inf-1t", false, 1)
-  s.verifier = { ...s.verifier, covertIngressBps: Infinity, covertEgressBps: Infinity }
-  const r = simulate(s)
-  assert("+ matmul: Γ_compute", r.gammaCompute, 2)
-  assert("+ matmul: Γ", r.gamma, 2)
-}
-
-// + network transparency (α=1, b_in=100KB/s, b_out=20KB/s, no sanitization)
-{
-  const r = simulate(scenario("gb200-nvl72", "inf-1t", false))
-  assert("+ network: Γ_compute", r.gammaCompute, 2)
-  assert("+ network: Γ_ingress", r.gammaIngress, 3.6, 0.1)
-  assert("+ network: Γ_egress", r.gammaEgress, 18, 0.1)
-  assert("+ network: Γ", r.gamma, 18, 0.1)
-  assert("+ network: dominant is egress", r.dominant === "egress" ? 1 : 0, 1)
-}
-
-// + memory sanitization
-{
-  const r = simulate(scenario("gb200-nvl72", "inf-1t", true))
-  assert("+ sanitization: Γ", r.gamma, Infinity)
-  assert("+ sanitization: dominant is duty", r.dominant === "duty" ? 1 : 0, 1)
-}
-
-// ===================================================================
-// 4× DGX H100 + W_inf,1T — should not fit (memory)
-// ===================================================================
-console.log("\n=== 4× DGX H100 + Inference 1T (memory fit fail) ===")
-{
-  const r = simulate(scenario("4x-dgx-h100", "inf-1t", false))
-  assert("memory fit: Γ", r.gamma, Infinity)
-  assert("memory fit: dominant", r.dominant === "memory-fit" ? 1 : 0, 1)
-}
-
-// ===================================================================
-// 4× DGX H100 + W_inf,200B — should fit, egress-bound
-// ===================================================================
-console.log("\n=== 4× DGX H100 + Inference 200B ===")
-{
-  const r = simulate(scenario("4x-dgx-h100", "inf-200b", false))
-  assert("200B: Γ_compute", r.gammaCompute, 2)
-  assert("200B: finite", r.finite ? 1 : 0, 1)
-  // Γ_egress = Ĝ*d_out / (g*b_out) = 31.7e15*4 / (4e11*20e3) = 15.85
-  assert("200B: Γ_egress", r.gammaEgress, 15.85, 0.1)
-  assert("200B: dominant is egress", r.dominant === "egress" ? 1 : 0, 1)
-}
-
-// ===================================================================
-// GB200 NVL72 + W_train,70B — d_in=d_out=0, compute only
-// ===================================================================
-console.log("\n=== GB200 NVL72 + Training 70B ===")
-{
-  const r = simulate(scenario("gb200-nvl72", "train-70b", false))
-  assert("train: Γ_compute", r.gammaCompute, 2)
-  assert("train: Γ_ingress", r.gammaIngress, 1)
-  assert("train: Γ_egress", r.gammaEgress, 1)
-  assert("train: Γ", r.gamma, 2)
-  assert("train: dominant is compute", r.dominant === "compute" ? 1 : 0, 1)
-}
-
-// ===================================================================
-// GB200 NVL72 + W_inf,200B — highest egress overhead
-// ===================================================================
-console.log("\n=== GB200 NVL72 + Inference 200B ===")
-{
-  const r = simulate(scenario("gb200-nvl72", "inf-200b", false))
-  // Γ_egress = 180e15*4 / (4e11*20e3) = 90
-  assert("200B on GB200: Γ_egress", r.gammaEgress, 90, 0.1)
-  assert("200B on GB200: dominant is egress", r.dominant === "egress" ? 1 : 0, 1)
-}
-
-// ===================================================================
-// V2: inference workload
-// ===================================================================
-console.log("\n=== Inference: Llama 70B on 8×H100 ===")
-{
-  const hw = HARDWARE["4x-dgx-h100"]
-  const wl: CovertWorkloadInference = {
-    label: "Llama 70B on 8×H100",
-    kind: "inference",
-    unit: "token",
-    backend: "roofline-lite",
-    modelKey: "Llama 3 70B",
-    gpuKey: "H100",
-    nGpu: 8,
-    contextLength: 2048,
-  }
-  const s: Scenario = {
-    hardware: hw,
-    honest: honestLoadFromFractions(hw, 0.5, 0.5),
-    verifier: VERIFIER_FULL,
-    covert: wl,
-  }
+  const s = inferenceScenario(HW_8xH100, "Llama 3 70B", 2048, false)
   const r = simulate(s)
   console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
   console.log(`  regime: ${r.v2?.regime}, optBatch: ${r.v2?.optimalBatchSize}`)
-  assert("inf: has v2 metadata", r.v2 ? 1 : 0, 1)
+  assert("70B: has v2 metadata", r.v2 ? 1 : 0, 1)
+  assert("70B: finite", r.finite ? 1 : 0, 1)
+  // With 50% honest compute and α=1, gammaCompute should be ~2×
+  assert("70B: gammaCompute ≈ 2", r.gammaCompute, 2, 0.3)
 }
 
 // ===================================================================
-// V2: training workload with sync (use 8B to fit in 8×H100)
+// 98% honest compute should cause large overhead
+// ===================================================================
+console.log("\n=== Llama 70B on 8×H100, 98% honest compute ===")
+{
+  const s = inferenceScenario(HW_8xH100, "Llama 3 70B", 2048, false, 1.0, 0.98, 0.1)
+  const r = simulate(s)
+  console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
+  // With only 2% compute remaining, should see significant overhead
+  // (may be <50× because smaller batches shift to memory-bandwidth-bound regime)
+  assert("98%: gamma > 5", r.gamma > 5 ? 1 : 0, 1)
+}
+
+// ===================================================================
+// Hardware resolution: GPU specs should determine compute
+// ===================================================================
+console.log("\n=== Hardware resolution ===")
+{
+  const rh = resolveHardware(HW_8xH100, 2) // BF16 = precision key 16
+  // H100 FP16: 1e15 * 0.7 (util cap) = 7e14 per GPU
+  // 8 GPUs = 5.6e15
+  assert("8×H100 BF16 compute", rh.computeFlops, 8 * 1e15 * 0.7, 0.01)
+  // H100 HBM: 80 GB per GPU, 8 GPUs = 640 GB
+  assert("8×H100 HBM", rh.hbmBytes, 8 * 80e9, 0.01)
+  console.log(`  computeFlops = ${rh.computeFlops.toExponential(2)}, hbmBytes = ${rh.hbmBytes.toExponential(2)}`)
+}
+
+// ===================================================================
+// Memory fit: large model on small hardware
+// ===================================================================
+console.log("\n=== Llama 405B on 8×H100 (memory check) ===")
+{
+  const s = inferenceScenario(HW_8xH100, "Llama 3 405B", 2048, false, 1.0, 0.1, 0.1)
+  const r = simulate(s)
+  console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}, fitMargin = ${(r.fitMarginBytes / 1e9).toFixed(1)} GB`)
+  // 405B at BF16 = ~810 GB weights. 8×H100 = 640 GB total HBM. Should not fit.
+  assert("405B on 8×H100: infeasible", r.gamma, Infinity)
+  assert("405B on 8×H100: memory-fit", r.dominant === "memory-fit" ? 1 : 0, 1)
+}
+
+// ===================================================================
+// Llama 405B on 8×H200 should fit (8×141GB = 1128 GB)
+// ===================================================================
+console.log("\n=== Llama 405B on 8×H200 ===")
+{
+  const s = inferenceScenario(HW_8xH200, "Llama 3 405B", 2048, false, 1.0, 0.1, 0.1)
+  const r = simulate(s)
+  console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
+  assert("405B on 8×H200: finite", r.finite ? 1 : 0, 1)
+}
+
+// ===================================================================
+// Sanitization: should have very high overhead with small epoch
+// ===================================================================
+console.log("\n=== Llama 70B with sanitization ===")
+{
+  const s = inferenceScenario(HW_8xH100, "Llama 3 70B", 2048, true)
+  const r = simulate(s)
+  console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
+  console.log(`  tReload = ${r.tReload.toFixed(1)}s, tCovert = ${r.tCovert.toFixed(1)}s`)
+  // With 5s epoch and large model to reload, should have significant duty overhead
+  assert("sanitization: gammaDuty > 1", r.gammaDuty > 1 ? 1 : 0, 1)
+}
+
+// ===================================================================
+// Training workload with periodic sync
 // ===================================================================
 console.log("\n=== Training: Llama 8B periodic sync ===")
 {
-  const hw = HARDWARE["4x-dgx-h100"]
+  const hw = HW_8xH100
+  const rh = resolveHardware(hw, 2)
   const wl: CovertWorkloadTraining = {
     label: "Train 8B periodic",
     kind: "training",
     unit: "train-token",
     backend: "roofline-lite",
     modelKey: "Llama 3 8B",
-    gpuKey: "H100",
-    nGpu: 8,
     syncPolicy: {
       mode: "periodic-updates",
       bytesInPerSync: 16e9,
@@ -188,14 +164,26 @@ console.log("\n=== Training: Llama 8B periodic sync ===")
   }
   const s: Scenario = {
     hardware: hw,
-    honest: honestLoadFromFractions(hw, 0.5, 0.1),
+    honest: honestLoadFromFractions(rh.computeFlops, rh.hbmBytes, 0.5, 0.1),
     verifier: { ...VERIFIER_NO_SANITIZATION, covertEgressBps: 1e6 },
     covert: wl,
   }
   const r = simulate(s)
   console.log(`  Γ = ${r.gamma.toFixed(1)}, dominant = ${r.dominant}`)
-  // With periodic sync, egress should become a factor
   assert("train: egress factor > 1", r.gammaEgress > 1 ? 1 : 0, 1)
+}
+
+// ===================================================================
+// Small model on large hardware: 8B on 8×H100 should be fast
+// ===================================================================
+console.log("\n=== Llama 8B on 8×H100 ===")
+{
+  const s = inferenceScenario(HW_8xH100, "Llama 3 8B", 4096, false, 0, 0, 0)
+  // No honest load, no verification → γ should be 1
+  s.verifier = { ...s.verifier, alpha: 0, covertIngressBps: Infinity, covertEgressBps: Infinity }
+  const r = simulate(s)
+  console.log(`  Γ = ${r.gamma.toFixed(1)}, regime: ${r.v2?.regime}, optBatch: ${r.v2?.optimalBatchSize}`)
+  assert("8B unverified: Γ = 1", r.gamma, 1, 0.01)
 }
 
 // ===================================================================

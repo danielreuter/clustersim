@@ -1104,7 +1104,7 @@ export function GammaDashboard() {
             </CardHeader>
             <CardContent>
               <Tabs defaultValue="hardware">
-                <TabsList className="grid w-full grid-cols-3 mb-4">
+                <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="hardware" className="text-xs">Hardware</TabsTrigger>
                   <TabsTrigger value="honest" className="text-xs">Honest</TabsTrigger>
                   <TabsTrigger value="covert" className="text-xs">Covert</TabsTrigger>
@@ -1244,7 +1244,7 @@ export function GammaDashboard() {
             </CardHeader>
             <CardContent>
               <Tabs defaultValue="matmul">
-                <TabsList className="grid w-full grid-cols-3 mb-4">
+                <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="matmul" className="text-xs">Compute</TabsTrigger>
                   <TabsTrigger value="network" className="text-xs">Network</TabsTrigger>
                   <TabsTrigger value="memory" className="text-xs">Memory</TabsTrigger>

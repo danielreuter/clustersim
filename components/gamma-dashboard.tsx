@@ -869,22 +869,25 @@ export function GammaDashboard() {
     const state = decodeState(window.location.hash)
     if (!state) return
     didApplyHash.current = true
-    setComputeFlopsExp(state.cfe)
-    setHbmBytesExp(state.hbe)
-    setComputeFrac(state.cf)
-    setMemoryFrac(state.mf)
-    setAlpha(state.a)
-    if (state.am != null) setAlphaMemory(state.am)
-    setBOutExp(state.bo)
-    setBInExp(state.bi)
-    setSanitization(state.sn)
-    setEpochSExp(state.ep)
-    setDowntimeSExp(state.dt)
-    setSurvivingGB(state.sg)
-    setNBytesExp(state.ne)
-    setGFlopExp(state.ge)
-    setDInExp(state.die)
-    setDOutExp(state.doe)
+    const frame = window.requestAnimationFrame(() => {
+      setComputeFlopsExp(state.cfe)
+      setHbmBytesExp(state.hbe)
+      setComputeFrac(state.cf)
+      setMemoryFrac(state.mf)
+      setAlpha(state.a)
+      if (state.am != null) setAlphaMemory(state.am)
+      setBOutExp(state.bo)
+      setBInExp(state.bi)
+      setSanitization(state.sn)
+      setEpochSExp(state.ep)
+      setDowntimeSExp(state.dt)
+      setSurvivingGB(state.sg)
+      setNBytesExp(state.ne)
+      setGFlopExp(state.ge)
+      setDInExp(state.die)
+      setDOutExp(state.doe)
+    })
+    return () => window.cancelAnimationFrame(frame)
   }, [])
 
   const computeFlops = 10 ** computeFlopsExp
@@ -917,7 +920,7 @@ export function GammaDashboard() {
     flopPerUnit: 10 ** gFlopExp,
     ingressBytesPerUnit: dInExp <= DIO_OFF ? 0 : 10 ** dInExp,
     egressBytesPerUnit: dOutExp <= DIO_OFF ? 0 : 10 ** dOutExp,
-  }), [nBytesExp, gFlopExp, dInExp, dOutExp])
+  }), [nBytesExp, gFlopExp, dInExp, dOutExp, DIO_OFF])
 
   const scenario: DirectScenario = useMemo(() => ({
     hardware: { computeFlops, hbmBytes },
@@ -936,7 +939,7 @@ export function GammaDashboard() {
       sanitizationEnabled: sanitization,
     },
     covert,
-  }), [computeFlops, hbmBytes, computeFrac, memoryFrac, alpha, alphaMemory, bOutExp, bInExp, sanitization, epochS, downtimeSExp, survivingGB, covert])
+  }), [computeFlops, hbmBytes, computeFrac, memoryFrac, alpha, alphaMemory, bOutExp, bInExp, sanitization, epochS, downtimeS, survivingGB, covert])
 
   const result = useMemo(() => simulateDirect(scenario), [scenario])
 

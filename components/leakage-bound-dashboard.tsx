@@ -61,7 +61,18 @@ type AllocationEvaluation = {
   }>
 }
 
+type RelaxedAllocation = {
+  probabilities: number[]
+  surrogateObjective: number
+  minEffectiveCost: number
+}
+
 const ZERO_EXP = -12
+const EXACT_TWO_PROOF_ENUMERATION_LIMIT = 50_000
+const INTEGERIZATION_ACTIVE_LIMIT = 6
+const PAIR_POLISH_GRID_POINTS = 64
+const PAIR_POLISH_RADIUS = 16
+const OPTIMALITY_CERTIFICATE_TOLERANCE = 0.01
 const DEFAULT_CHECKS: AuditCheckState[] = [
   {
     id: "approximate-replay",
@@ -444,30 +455,29 @@ function decodeState(hash: string): BoundState | null {
   }
 }
 
-function quotaForDetection(p: number, detectionThreshold: number) {
-  if (p <= 0) {
+function quotaForDetection(detectionEvidence: number, detectionThreshold: number) {
+  const detectionBudget = -Math.log1p(-detectionThreshold)
+  if (detectionEvidence <= 0) {
     return {
       rawFailuresForDetection: Infinity,
       firstFailuresDetectedAtThreshold: Infinity,
       budgetedFailingOutputs: Infinity,
-      approximation: Infinity,
     }
   }
-  if (p >= 1) {
+  if (!Number.isFinite(detectionEvidence)) {
     return {
-      rawFailuresForDetection: 1,
+      rawFailuresForDetection: 0,
       firstFailuresDetectedAtThreshold: 1,
       budgetedFailingOutputs: 0,
-      approximation: -Math.log1p(-detectionThreshold),
     }
   }
-  const rawFailuresForDetection = Math.log1p(-detectionThreshold) / Math.log1p(-p)
+
+  const rawFailuresForDetection = detectionBudget / detectionEvidence
   const firstFailuresDetectedAtThreshold = Math.max(1, ceilStable(rawFailuresForDetection))
   return {
     rawFailuresForDetection,
     firstFailuresDetectedAtThreshold,
     budgetedFailingOutputs: Math.max(0, firstFailuresDetectedAtThreshold - 1),
-    approximation: -Math.log1p(-detectionThreshold) / p,
   }
 }
 
@@ -508,11 +518,20 @@ function evaluateAllocation({
     tasksPerEpoch <= 0 ? 0 : clamp(challengeCount / tasksPerEpoch, 0, 1)
   ))
   const pBands = new Array(checks.length).fill(0)
-  let noCheckProbability = 1
+  const detectionEvidenceByBand = new Array(checks.length).fill(0)
+  const detectionEvidenceByCheck = pChecks.map(p => {
+    if (p <= 0) return 0
+    if (p >= 1) return Infinity
+    return -Math.log1p(-p)
+  })
+  let cumulativeDetectionEvidence = 0
 
   for (let index = checks.length - 1; index >= 0; index -= 1) {
-    noCheckProbability *= 1 - pChecks[index]
-    pBands[index] = 1 - noCheckProbability
+    cumulativeDetectionEvidence += detectionEvidenceByCheck[index]
+    detectionEvidenceByBand[index] = cumulativeDetectionEvidence
+    pBands[index] = Number.isFinite(cumulativeDetectionEvidence)
+      ? -Math.expm1(-cumulativeDetectionEvidence)
+      : 1
   }
 
   let previousResidual = outputBytes
@@ -523,7 +542,7 @@ function evaluateAllocation({
 
   checks.forEach((check, index) => {
     const bandEntropyBytes = Math.max(0, previousResidual - check.residualBytes)
-    const quota = quotaForDetection(pBands[index], detectionThreshold)
+    const quota = quotaForDetection(detectionEvidenceByBand[index], detectionThreshold)
     const horizonCappedFailingOutputs = Math.min(taskCount, quota.budgetedFailingOutputs)
     const term = multiplyBudget(horizonCappedFailingOutputs, bandEntropyBytes)
 
@@ -593,6 +612,332 @@ function maxChallengesForBudget(tasksPerEpoch: number, budget: number, cost: num
   return Math.min(tasksPerEpoch, Math.max(0, floorStable(budget / Math.max(1, cost))))
 }
 
+function solveLinearizedRelaxation(
+  checks: ProcessedCheck[],
+  outputBytes: number,
+  auditShare: number
+): RelaxedAllocation {
+  const probabilities = checks.map(() => 0)
+  if (checks.length === 0 || auditShare <= 0) {
+    return {
+      probabilities,
+      surrogateObjective: 0,
+      minEffectiveCost: Infinity,
+    }
+  }
+
+  const keptReverse: number[] = []
+  let cheapestStronger = Infinity
+  for (let index = checks.length - 1; index >= 0; index -= 1) {
+    const cost = checks[index].overheadCost
+    if (!Number.isFinite(cheapestStronger) || cost < cheapestStronger * (1 - 1e-12)) {
+      keptReverse.push(index)
+      cheapestStronger = cost
+    }
+  }
+
+  const layers: Array<{
+    originalIndex: number
+    cost: number
+    entropy: number
+  }> = []
+  let previousResidual = outputBytes
+
+  keptReverse.reverse().forEach(originalIndex => {
+    const check = checks[originalIndex]
+    const entropy = Math.max(0, previousResidual - check.residualBytes)
+    previousResidual = check.residualBytes
+    if (entropy > Math.max(1, outputBytes) * 1e-14) {
+      layers.push({
+        originalIndex,
+        cost: check.overheadCost,
+        entropy,
+      })
+    }
+  })
+
+  if (layers.length === 0) {
+    return {
+      probabilities,
+      surrogateObjective: 0,
+      minEffectiveCost: Infinity,
+    }
+  }
+
+  type Block = {
+    start: number
+    end: number
+    entropy: number
+    incrementalCost: number
+  }
+
+  const blocks: Block[] = []
+  layers.forEach((layer, index) => {
+    const previousCost = index === 0 ? 0 : layers[index - 1].cost
+    const incrementalCost = Math.max(layer.cost - previousCost, Number.EPSILON)
+    blocks.push({
+      start: index,
+      end: index,
+      entropy: layer.entropy,
+      incrementalCost,
+    })
+
+    while (blocks.length >= 2) {
+      const right = blocks[blocks.length - 1]
+      const left = blocks[blocks.length - 2]
+      const violatesOrdering =
+        left.entropy * right.incrementalCost <
+        right.entropy * left.incrementalCost
+      if (!violatesOrdering) break
+      blocks.splice(blocks.length - 2, 2, {
+        start: left.start,
+        end: right.end,
+        entropy: left.entropy + right.entropy,
+        incrementalCost: left.incrementalCost + right.incrementalCost,
+      })
+    }
+  })
+
+  const denominator = blocks.reduce(
+    (sum, block) => sum + Math.sqrt(block.entropy * block.incrementalCost),
+    0
+  )
+  if (!(denominator > 0) || !Number.isFinite(denominator)) {
+    return {
+      probabilities,
+      surrogateObjective: 0,
+      minEffectiveCost: Math.min(...layers.map(layer => layer.cost)),
+    }
+  }
+
+  const cumulative = layers.map(() => 0)
+  blocks.forEach(block => {
+    const value =
+      auditShare *
+      Math.sqrt(block.entropy / block.incrementalCost) /
+      denominator
+    for (let index = block.start; index <= block.end; index += 1) {
+      cumulative[index] = value
+    }
+  })
+
+  layers.forEach((layer, index) => {
+    probabilities[layer.originalIndex] = Math.max(
+      0,
+      cumulative[index] - (cumulative[index + 1] ?? 0)
+    )
+  })
+
+  return {
+    probabilities,
+    surrogateObjective: (denominator * denominator) / auditShare,
+    minEffectiveCost: Math.min(...layers.map(layer => layer.cost)),
+  }
+}
+
+function spendOfAllocation(challenges: number[], checks: ProcessedCheck[]) {
+  return checks.reduce((sum, check, index) => (
+    sum + (challenges[index] ?? 0) * check.overheadCost
+  ), 0)
+}
+
+function optimizeTwoExactlyIfSmall({
+  checks,
+  tasksPerEpoch,
+  totalAuditBudget,
+  evaluate,
+  limit = EXACT_TWO_PROOF_ENUMERATION_LIMIT,
+}: {
+  checks: ProcessedCheck[]
+  tasksPerEpoch: number
+  totalAuditBudget: number
+  evaluate: (allocation: number[]) => AllocationEvaluation
+  limit?: number
+}): AllocationEvaluation | null {
+  if (checks.length !== 2) return null
+
+  const maxima = checks.map(check =>
+    maxChallengesForBudget(tasksPerEpoch, totalAuditBudget, check.overheadCost)
+  )
+  const outer = maxima[0] <= maxima[1] ? 0 : 1
+  const inner = 1 - outer
+  if (maxima[outer] > limit) return null
+
+  let best: AllocationEvaluation | null = null
+  for (let outerCount = 0; outerCount <= maxima[outer]; outerCount += 1) {
+    const remainingBudget = totalAuditBudget - outerCount * checks[outer].overheadCost
+    const allocation = [0, 0]
+    allocation[outer] = outerCount
+    allocation[inner] = maxChallengesForBudget(
+      tasksPerEpoch,
+      remainingBudget,
+      checks[inner].overheadCost
+    )
+    const candidate = evaluate(allocation)
+    if (isBetterEvaluation(candidate, best)) {
+      best = candidate
+    }
+  }
+
+  return best
+}
+
+function integerizeAndEvaluateRelaxation({
+  relaxed,
+  checks,
+  tasksPerEpoch,
+  totalAuditBudget,
+  evaluate,
+}: {
+  relaxed: RelaxedAllocation
+  checks: ProcessedCheck[]
+  tasksPerEpoch: number
+  totalAuditBudget: number
+  evaluate: (allocation: number[]) => AllocationEvaluation
+}): AllocationEvaluation {
+  const maxima = checks.map(check =>
+    maxChallengesForBudget(tasksPerEpoch, totalAuditBudget, check.overheadCost)
+  )
+  const idealChallenges = relaxed.probabilities.map(probability => (
+    clamp(probability, 0, 1) * tasksPerEpoch
+  ))
+  const active = idealChallenges
+    .map((challengeCount, index) => challengeCount > 1e-9 && maxima[index] > 0 ? index : -1)
+    .filter(index => index >= 0)
+  const seen = new Set<string>()
+  let best: AllocationEvaluation | null = null
+
+  const addCandidate = (rawAllocation: number[]) => {
+    const allocation = clampAllocationToBudget(rawAllocation, checks, totalAuditBudget)
+    const key = allocation.join(",")
+    if (seen.has(key)) return
+    seen.add(key)
+
+    const candidate = evaluate(allocation)
+    if (isBetterEvaluation(candidate, best)) {
+      best = candidate
+    }
+  }
+
+  addCandidate(checks.map(() => 0))
+  addCandidate(idealChallenges.map(floorStable))
+  addCandidate(idealChallenges.map(challengeCount => Math.round(challengeCount)))
+  addCandidate(idealChallenges.map(ceilStable))
+
+  checks.forEach((check, index) => {
+    const allocation = checks.map(() => 0)
+    allocation[index] = maxChallengesForBudget(tasksPerEpoch, totalAuditBudget, check.overheadCost)
+    addCandidate(allocation)
+  })
+
+  const roundedChoicesFor = (index: number) => {
+    const floor = Math.min(maxima[index], Math.max(0, floorStable(idealChallenges[index])))
+    const ceil = Math.min(maxima[index], Math.max(0, ceilStable(idealChallenges[index])))
+    return Array.from(new Set([floor, ceil]))
+  }
+
+  const fillSlackAndAdd = (allocation: number[], slackIndex: number) => {
+    allocation[slackIndex] = 0
+    const fixedSpend = spendOfAllocation(allocation, checks)
+    if (fixedSpend > totalAuditBudget + Math.max(1, totalAuditBudget) * 1e-12) return
+
+    allocation[slackIndex] = maxChallengesForBudget(
+      tasksPerEpoch,
+      totalAuditBudget - fixedSpend,
+      checks[slackIndex].overheadCost
+    )
+    addCandidate(allocation)
+  }
+
+  checks.forEach((_check, slackIndex) => {
+    const fixedIndices = active.filter(index => index !== slackIndex)
+    if (fixedIndices.length <= INTEGERIZATION_ACTIVE_LIMIT) {
+      const allocation = checks.map(() => 0)
+      const visit = (position: number) => {
+        if (position >= fixedIndices.length) {
+          fillSlackAndAdd([...allocation], slackIndex)
+          return
+        }
+
+        const index = fixedIndices[position]
+        roundedChoicesFor(index).forEach(challengeCount => {
+          allocation[index] = challengeCount
+          visit(position + 1)
+        })
+        allocation[index] = 0
+      }
+      visit(0)
+      return
+    }
+
+    const templates = [
+      idealChallenges.map(floorStable),
+      idealChallenges.map(challengeCount => Math.round(challengeCount)),
+      idealChallenges.map(ceilStable),
+    ]
+    templates.forEach(template => {
+      const allocation = checks.map((_innerCheck, index) => (
+        index === slackIndex ? 0 : template[index]
+      ))
+      fillSlackAndAdd(allocation, slackIndex)
+    })
+  })
+
+  return best ?? evaluate(checks.map(() => 0))
+}
+
+function candidateHasOnePercentCertificate({
+  candidate,
+  relaxed,
+  checks,
+  outputBytes,
+  taskCount,
+  ledgerTermBytes,
+  auditShare,
+  detectionThreshold,
+}: {
+  candidate: AllocationEvaluation
+  relaxed: RelaxedAllocation
+  checks: ProcessedCheck[]
+  outputBytes: number
+  taskCount: number
+  ledgerTermBytes: number
+  auditShare: number
+  detectionThreshold: number
+}) {
+  if (!Number.isFinite(candidate.KBytes)) return false
+  if (!(relaxed.surrogateObjective > 0)) return true
+  if (!(relaxed.minEffectiveCost > 0)) return false
+
+  const rho = auditShare / relaxed.minEffectiveCost
+  if (!(rho >= 0 && rho < 1)) return false
+
+  const strongestResidualBytes = checks.length > 0
+    ? checks[checks.length - 1].residualBytes
+    : outputBytes
+  const baseline = taskCount * strongestResidualBytes + ledgerTermBytes
+  let previousResidual = outputBytes
+  let minBandEntropy = Infinity
+  checks.forEach(check => {
+    const entropy = Math.max(0, previousResidual - check.residualBytes)
+    if (entropy > 0) minBandEntropy = Math.min(minBandEntropy, entropy)
+    previousResidual = check.residualBytes
+  })
+
+  if (!Number.isFinite(minBandEntropy)) return true
+  if (candidate.KBytes >= baseline + taskCount * minBandEntropy) return false
+
+  const detectionBudget = -Math.log1p(-detectionThreshold)
+  const allocationDependentEntropy = Math.max(0, outputBytes - strongestResidualBytes)
+  const lowerBound =
+    baseline +
+    detectionBudget * (1 - rho) * relaxed.surrogateObjective -
+    allocationDependentEntropy
+  if (!(lowerBound > 0)) return false
+
+  return candidate.KBytes / lowerBound - 1 <= OPTIMALITY_CERTIFICATE_TOLERANCE
+}
+
 function allocationFromShares(checks: ProcessedCheck[], tasksPerEpoch: number, totalBudget: number, shares: number[]) {
   const totalShare = shares.reduce((sum, share) => sum + Math.max(0, share), 0)
   if (totalShare <= 0) return checks.map(() => 0)
@@ -653,23 +998,27 @@ function optimizePair({
   const pairBudget = Math.max(0, totalAuditBudget - fixedSpend)
   const firstCost = checks[firstIndex].overheadCost
   const secondCost = checks[secondIndex].overheadCost
-  const maxFirst = Math.min(
-    tasksPerEpoch,
-    Math.max(0, floorStable(pairBudget / firstCost))
-  )
+  const maxFirst = maxChallengesForBudget(tasksPerEpoch, pairBudget, firstCost)
+  const maxSecond = maxChallengesForBudget(tasksPerEpoch, pairBudget, secondCost)
   let bestAllocation = current
   let bestEvaluation = evaluate(current)
 
-  const considerFirstCount = (firstCountRaw: number) => {
-    const firstCount = Math.max(0, Math.min(maxFirst, Math.round(firstCountRaw)))
-    const remainingBudget = Math.max(0, pairBudget - firstCount * firstCost)
-    const secondCount = Math.min(
+  const considerOuterCount = (
+    outerIndex: number,
+    innerIndex: number,
+    outerCountRaw: number,
+    outerMax: number
+  ) => {
+    const outerCount = Math.max(0, Math.min(outerMax, Math.round(outerCountRaw)))
+    const remainingBudget = Math.max(0, pairBudget - outerCount * checks[outerIndex].overheadCost)
+    const innerCount = maxChallengesForBudget(
       tasksPerEpoch,
-      Math.max(0, floorStable(remainingBudget / secondCost))
+      remainingBudget,
+      checks[innerIndex].overheadCost
     )
     const candidate = [...current]
-    candidate[firstIndex] = firstCount
-    candidate[secondIndex] = secondCount
+    candidate[outerIndex] = outerCount
+    candidate[innerIndex] = innerCount
     const candidateEvaluation = evaluate(candidate)
     if (isBetterEvaluation(candidateEvaluation, bestEvaluation)) {
       bestAllocation = candidate
@@ -677,27 +1026,112 @@ function optimizePair({
     }
   }
 
-  if (maxFirst <= 50000) {
-    for (let firstCount = 0; firstCount <= maxFirst; firstCount += 1) {
-      considerFirstCount(firstCount)
+  const outerIndex = maxFirst <= maxSecond ? firstIndex : secondIndex
+  const innerIndex = outerIndex === firstIndex ? secondIndex : firstIndex
+  const outerMax = outerIndex === firstIndex ? maxFirst : maxSecond
+  if (outerMax <= EXACT_TWO_PROOF_ENUMERATION_LIMIT) {
+    for (let outerCount = 0; outerCount <= outerMax; outerCount += 1) {
+      considerOuterCount(outerIndex, innerIndex, outerCount, outerMax)
     }
     return bestAllocation
   }
 
-  const samples = 240
-  for (let sample = 0; sample <= samples; sample += 1) {
-    considerFirstCount((maxFirst * sample) / samples)
+  const seenFirstCounts = new Set<number>()
+  const considerFirstCount = (firstCountRaw: number) => {
+    const firstCount = Math.max(0, Math.min(maxFirst, Math.round(firstCountRaw)))
+    if (seenFirstCounts.has(firstCount)) return
+    seenFirstCounts.add(firstCount)
+    considerOuterCount(firstIndex, secondIndex, firstCount, maxFirst)
   }
 
+  for (let sample = 0; sample <= PAIR_POLISH_GRID_POINTS; sample += 1) {
+    considerFirstCount((maxFirst * sample) / PAIR_POLISH_GRID_POINTS)
+  }
+
+  considerFirstCount(current[firstIndex] ?? 0)
   const currentBest = bestAllocation[firstIndex]
-  const window = Math.max(2000, Math.floor(maxFirst / samples))
-  const lo = Math.max(0, currentBest - window)
-  const hi = Math.min(maxFirst, currentBest + window)
-  for (let firstCount = lo; firstCount <= hi; firstCount += 1) {
-    considerFirstCount(firstCount)
+  for (let offset = -PAIR_POLISH_RADIUS; offset <= PAIR_POLISH_RADIUS; offset += 1) {
+    considerFirstCount(currentBest + offset)
   }
 
   return bestAllocation
+}
+
+function polishAllocationFixedWork({
+  initial,
+  checks,
+  tasksPerEpoch,
+  totalAuditBudget,
+  outputBytes,
+  evaluate,
+}: {
+  initial: number[]
+  checks: ProcessedCheck[]
+  tasksPerEpoch: number
+  totalAuditBudget: number
+  outputBytes: number
+  evaluate: (allocation: number[]) => AllocationEvaluation
+}) {
+  const bandWeights = checks.map((check, index) => {
+    const previous = index === 0 ? outputBytes : checks[index - 1].residualBytes
+    return Math.max(0, previous - check.residualBytes)
+  })
+  const starts: number[][] = [
+    initial,
+    checks.map(() => 0),
+    allocationFromShares(checks, tasksPerEpoch, totalAuditBudget, checks.map(() => 1)),
+    allocationFromShares(checks, tasksPerEpoch, totalAuditBudget, checks.map(check => 1 / check.overheadCost)),
+    allocationFromShares(checks, tasksPerEpoch, totalAuditBudget, bandWeights),
+  ]
+
+  checks.forEach((check, index) => {
+    const allocation = checks.map(() => 0)
+    allocation[index] = maxChallengesForBudget(tasksPerEpoch, totalAuditBudget, check.overheadCost)
+    starts.push(allocation)
+  })
+
+  let best = evaluate(initial)
+
+  starts.forEach(start => {
+    let current = clampAllocationToBudget(start, checks, totalAuditBudget)
+    let currentEval = evaluate(current)
+
+    if (isBetterEvaluation(currentEval, best)) {
+      best = currentEval
+    }
+
+    for (let pass = 0; pass < 3; pass += 1) {
+      let improved = false
+
+      for (let firstIndex = 0; firstIndex < checks.length; firstIndex += 1) {
+        for (let secondIndex = firstIndex + 1; secondIndex < checks.length; secondIndex += 1) {
+          const candidate = optimizePair({
+            current,
+            firstIndex,
+            secondIndex,
+            checks,
+            tasksPerEpoch,
+            totalAuditBudget,
+            evaluate,
+          })
+          const candidateEval = evaluate(candidate)
+          if (isBetterEvaluation(candidateEval, currentEval)) {
+            current = candidate
+            currentEval = candidateEval
+            improved = true
+          }
+        }
+      }
+
+      if (!improved) break
+    }
+
+    if (isBetterEvaluation(currentEval, best)) {
+      best = currentEval
+    }
+  })
+
+  return best
 }
 
 function optimizeAllocation({
@@ -737,61 +1171,44 @@ function optimizeAllocation({
     return evaluate([maxChallengesForBudget(tasksPerEpoch, totalAuditBudget, checks[0].overheadCost)])
   }
 
-  const bandWeights = checks.map((check, index) => {
-    const previous = index === 0 ? outputBytes : checks[index - 1].residualBytes
-    return Math.max(0, previous - check.residualBytes)
+  const exactTwoProofResult = optimizeTwoExactlyIfSmall({
+    checks,
+    tasksPerEpoch,
+    totalAuditBudget,
+    evaluate,
   })
-  const starts: number[][] = [
-    checks.map(() => 0),
-    allocationFromShares(checks, tasksPerEpoch, totalAuditBudget, checks.map(() => 1)),
-    allocationFromShares(checks, tasksPerEpoch, totalAuditBudget, checks.map(check => 1 / check.overheadCost)),
-    allocationFromShares(checks, tasksPerEpoch, totalAuditBudget, bandWeights),
-  ]
+  if (exactTwoProofResult) return exactTwoProofResult
 
-  checks.forEach((check, index) => {
-    const allocation = checks.map(() => 0)
-    allocation[index] = maxChallengesForBudget(tasksPerEpoch, totalAuditBudget, check.overheadCost)
-    starts.push(allocation)
-  })
-
-  let best: AllocationEvaluation | null = null
-
-  starts.forEach(start => {
-    let current = clampAllocationToBudget(start, checks, totalAuditBudget)
-    let currentEval = evaluate(current)
-    let improved = true
-    let passes = 0
-
-    while (improved && passes < 8) {
-      improved = false
-      passes += 1
-      for (let firstIndex = 0; firstIndex < checks.length; firstIndex += 1) {
-        for (let secondIndex = firstIndex + 1; secondIndex < checks.length; secondIndex += 1) {
-          const candidate = optimizePair({
-            current,
-            firstIndex,
-            secondIndex,
-            checks,
-            tasksPerEpoch,
-            totalAuditBudget,
-            evaluate,
-          })
-          const candidateEval = evaluate(candidate)
-          if (isBetterEvaluation(candidateEval, currentEval)) {
-            current = candidate
-            currentEval = candidateEval
-            improved = true
-          }
-        }
-      }
-    }
-
-    if (isBetterEvaluation(currentEval, best)) {
-      best = currentEval
-    }
+  const relaxed = solveLinearizedRelaxation(checks, outputBytes, auditShare)
+  const integerized = integerizeAndEvaluateRelaxation({
+    relaxed,
+    checks,
+    tasksPerEpoch,
+    totalAuditBudget,
+    evaluate,
   })
 
-  return best ?? evaluate(checks.map(() => 0))
+  if (candidateHasOnePercentCertificate({
+    candidate: integerized,
+    relaxed,
+    checks,
+    outputBytes,
+    taskCount,
+    ledgerTermBytes,
+    auditShare,
+    detectionThreshold,
+  })) {
+    return integerized
+  }
+
+  return polishAllocationFixedWork({
+    initial: integerized.challenges,
+    checks,
+    tasksPerEpoch,
+    totalAuditBudget,
+    outputBytes,
+    evaluate,
+  })
 }
 
 function computeBound(state: BoundState) {

@@ -1,62 +1,105 @@
 "use client"
 
 import * as React from "react"
-import { Slider as SliderPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+
+type SliderProps = Omit<
+  React.InputHTMLAttributes<HTMLInputElement>,
+  "defaultValue" | "max" | "min" | "onChange" | "step" | "type" | "value"
+> & {
+  defaultValue?: number[]
+  max?: number
+  min?: number
+  onValueChange?: (value: number[]) => void
+  onValueCommit?: (value: number[]) => void
+  orientation?: "horizontal" | "vertical"
+  step?: number
+  value?: number[]
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n))
+}
+
+function firstValue(value: number[] | undefined, fallback: number): number {
+  const next = Array.isArray(value) && Number.isFinite(value[0]) ? value[0] : fallback
+  return next
+}
 
 function Slider({
   className,
   defaultValue,
-  value,
-  min = 0,
+  disabled,
   max = 100,
+  min = 0,
+  onValueChange,
+  onValueCommit,
+  orientation = "horizontal",
+  step = 1,
+  value,
   ...props
-}: React.ComponentProps<typeof SliderPrimitive.Root>) {
-  const _values = React.useMemo(
-    () =>
-      Array.isArray(value)
-        ? value
-        : Array.isArray(defaultValue)
-          ? defaultValue
-          : [min, max],
-    [value, defaultValue, min, max]
-  )
+}: SliderProps) {
+  const fallbackValue = firstValue(defaultValue, min)
+  const [internalValue, setInternalValue] = React.useState(fallbackValue)
+  const isControlled = Array.isArray(value)
+  const rawValue = isControlled ? firstValue(value, fallbackValue) : internalValue
+  const currentValue = clamp(rawValue, min, max)
+  const range = max - min
+  const percentage = range > 0 ? ((currentValue - min) / range) * 100 : 0
+
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const next = Number(event.currentTarget.value)
+    if (!isControlled) setInternalValue(next)
+    onValueChange?.([next])
+  }
+
+  const handleCommit = (event: React.SyntheticEvent<HTMLInputElement>) => {
+    onValueCommit?.([Number(event.currentTarget.value)])
+  }
 
   return (
-    <SliderPrimitive.Root
+    <span
+      data-disabled={disabled ? "" : undefined}
+      data-orientation={orientation}
       data-slot="slider"
-      defaultValue={defaultValue}
-      value={value}
-      min={min}
-      max={max}
       className={cn(
-        "relative flex w-full touch-none items-center select-none data-[disabled]:opacity-50 data-[orientation=vertical]:h-full data-[orientation=vertical]:min-h-44 data-[orientation=vertical]:w-auto data-[orientation=vertical]:flex-col",
+        "relative flex h-4 w-full touch-pan-y items-center select-none data-[disabled]:opacity-50",
         className
       )}
-      {...props}
     >
-      <SliderPrimitive.Track
+      <input
+        {...props}
+        data-slot="slider-input"
+        disabled={disabled}
+        max={max}
+        min={min}
+        onBlur={handleCommit}
+        onChange={handleChange}
+        onKeyUp={handleCommit}
+        onMouseUp={handleCommit}
+        onTouchEnd={handleCommit}
+        step={step}
+        type="range"
+        value={currentValue}
+        className="peer absolute inset-0 z-10 m-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+      />
+      <span
         data-slot="slider-track"
-        className={cn(
-          "relative grow overflow-hidden rounded-full bg-muted data-[orientation=horizontal]:h-1.5 data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-1.5"
-        )}
+        className="relative h-1.5 w-full grow overflow-hidden rounded-full bg-muted"
       >
-        <SliderPrimitive.Range
+        <span
           data-slot="slider-range"
-          className={cn(
-            "absolute bg-primary data-[orientation=horizontal]:h-full data-[orientation=vertical]:w-full"
-          )}
+          className="absolute h-full bg-primary"
+          style={{ left: 0, width: `${percentage}%` }}
         />
-      </SliderPrimitive.Track>
-      {Array.from({ length: _values.length }, (_, index) => (
-        <SliderPrimitive.Thumb
-          data-slot="slider-thumb"
-          key={index}
-          className="block size-4 shrink-0 rounded-full border border-primary bg-white shadow-sm ring-ring/50 transition-[color,box-shadow] hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
-        />
-      ))}
-    </SliderPrimitive.Root>
+      </span>
+      <span
+        data-slot="slider-thumb"
+        className="pointer-events-none absolute top-1/2 block size-4 shrink-0 rounded-full border border-primary bg-white shadow-sm ring-ring/50 transition-[color,box-shadow] hover:ring-4 peer-focus-visible:ring-4 peer-focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
+        style={{ left: `${percentage}%`, transform: "translate(-50%, -50%)" }}
+      />
+    </span>
   )
 }
 

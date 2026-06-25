@@ -26,7 +26,7 @@ export type AuditResult = AuditInputs & {
   utilizationGamma: number
   fullUtilizationCapacity: number
   evaluations: BatchEvaluation[]
-  certificateOptimal: BatchEvaluation
+  prevalenceOptimal: BatchEvaluation
   targetOptimal: BatchEvaluation
   manual: BatchEvaluation
   fullBatch: BatchEvaluation
@@ -200,7 +200,7 @@ export function computeAudit(raw: AuditInputs): AuditResult {
     (_, index) => evaluateBatch(inputs, index + 1, gamma),
   )
 
-  const certificateOptimal = evaluations.reduce((best, candidate) => {
+  const prevalenceOptimal = evaluations.reduce((best, candidate) => {
     if (candidate.cleanUpperBound < best.cleanUpperBound) return candidate
     if (candidate.cleanUpperBound > best.cleanUpperBound) return best
     return candidate.auditedRequests > best.auditedRequests ? candidate : best
@@ -218,7 +218,7 @@ export function computeAudit(raw: AuditInputs): AuditResult {
     utilizationGamma: gamma,
     fullUtilizationCapacity: Math.floor(inputs.requestCount * inputs.replayShare),
     evaluations,
-    certificateOptimal,
+    prevalenceOptimal,
     targetOptimal,
     manual: evaluations[inputs.manualBatchSize - 1],
     fullBatch: evaluations[inputs.maxBatchSize - 1],
